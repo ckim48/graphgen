@@ -1,0 +1,35 @@
+/* Minimal, modern polish */
+:root{
+  --glass-bg: rgba(255,255,255,0.06);
+  --glass-br: rgba(255,255,255,0.12);
+}
+.bg-gradient{
+  background: radial-gradient(1200px 600px at 20% -10%, #234 0%, transparent 55%),
+              radial-gradient(1000px 500px at 100% 0%, #162239 0%, transparent 60%),
+              #0e1525;
+  min-height: 100dvh;
+}
+.glass{
+  background: var(--glass-bg);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid var(--glass-br) !important;
+}
+.ratio-16x9{ background: #0b1322; }
+.object-fit-contain{ object-fit: contain; }
+.loading{
+  position:absolute; inset:0;
+  display:flex; align-items:center; justify-content:center;
+  background: linear-gradient(0deg, rgba(14,21,37,.4), rgba(14,21,37,.4));
+}
+.spinner-border{ width: 2.5rem; height: 2.5rem; }
+/* Bright, clean look */
+.bg-bright{
+  background:
+    radial-gradient(1200px 600px at 20% -10%, #e8f0ff 0%, transparent 55%),
+    radial-gradient(1000px 500px at 100% 0%, #f3f7ff 0%, transparent 60%),
+    #f7f9fc;
+  min-height: 100dvh;
+}
+.ratio-16x9{ background: #fff; }
+.card{ background: #fff; }
