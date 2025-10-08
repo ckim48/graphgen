@@ -9,6 +9,7 @@ from flask import (
     Flask, render_template, request, jsonify, Response,
     redirect, url_for, flash, session
 )
+
 import numpy as np
 from sympy import symbols, lambdify
 from sympy.parsing.sympy_parser import (
@@ -125,7 +126,7 @@ def login():
             session["user_id"] = row["id"]
             session["username"] = row["username"]
             flash("Logged in successfully.", "success")
-            nxt = request.args.get("next") or url_for("index")
+            nxt = request.args.get("next") or url_for("home")
             return redirect(nxt)
 
         flash("Invalid credentials.", "danger")
@@ -137,7 +138,7 @@ def login():
 def logout():
     session.clear()
     flash("You have been logged out.", "info")
-    return redirect(url_for("index"))
+    return redirect(url_for("home"))
 
 # -----------------------------------------------------------------------------
 # Math / Grapher
@@ -156,8 +157,15 @@ def parse_expression(expr_text: str):
         raise ValueError("Use only the variable x in your expression.")
     return expr
 
+
 @app.route("/", methods=["GET", "POST"])
-def index():
+def home():
+    return render_template("landing.html")
+
+
+@app.route("/main", methods=["GET", "POST"])
+@login_required
+def main():
     expr_text = request.form.get("expr", "sin(x)")
     xmin = request.form.get("xmin", "-10")
     xmax = request.form.get("xmax", "10")
@@ -202,8 +210,11 @@ def data():
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
+# -----------------------------------------------------------------------------
+# Grid mapping helpers (21×21, axes reserved)
+# -----------------------------------------------------------------------------
 
-def _map_to_grid(
+def _map_to_grid_21(
     xs: np.ndarray,
     ys: List[Optional[float]],
     xmin: float,
@@ -212,9 +223,14 @@ def _map_to_grid(
     ymax: float,
     q: int = 10
 ) -> Tuple[List[Optional[int]], List[Optional[int]], int, int]:
-    cols = rows = 2 * q
-    sx = (cols - 1) / (xmax - xmin) if xmax != xmin else 1.0
-    sy = (rows - 1) / (ymax - ymin) if ymax != ymin else 1.0
+    """
+    Map (x,y) to grid indices (col,row) on a (2*q+1)×(2*q+1) grid.
+    Top row = 0 (y = ymax), bottom row = 2*q (y = ymin).
+    Left col = 0 (x = xmin), right col = 2*q (x = xmax).
+    """
+    cols = rows = 2 * q + 1  # 21 when q=10
+    sx = (cols - 1) / (xmax - xmin) if xmax != xmin else 1.0  # = 20 / (xmax-xmin)
+    sy = (rows - 1) / (ymax - ymin) if ymax != ymin else 1.0  # = 20 / (ymax-ymin)
 
     gx: List[Optional[int]] = []
     gy: List[Optional[int]] = []
@@ -228,12 +244,70 @@ def _map_to_grid(
             gx.append(None); gy.append(None); continue
 
         col = int(round((xx - xmin) * sx))
-        row = int(round((y  - ymin) * sy))
+        # IMPORTANT: flip y so row=0 is at the TOP (y = ymax)
+        row = int(round((ymax - y) * sy))
+
         col = max(0, min(cols - 1, col))
         row = max(0, min(rows - 1, row))
         gx.append(col); gy.append(row)
 
     return gx, gy, cols, rows
+
+
+def _to_centered_cells(
+    gx: List[Optional[int]],
+    gy: List[Optional[int]],
+    q: int,
+    mode: str = "bycol",
+    reserve_axes: bool = True,
+) -> List[List[int]]:
+    """
+    Convert grid indices (col,row) to centered coordinates in [-q..q] × [-q..q],
+    where col=row=q corresponds to the axes intersection (0,0).
+    If reserve_axes=True, skip any cells where x==0 or y==0.
+    mode:
+      - "bycol"  → choose at most one cell per column (crisp line)
+      - "grid"   → include every visited cell (deduped)
+    """
+    center = q  # index of the central axis
+    seen = set()
+    out: List[Tuple[int,int]] = []
+
+    if mode == "bycol":
+        # For each column, pick the first row we encounter
+        col_to_row: Dict[int, int] = {}
+        for c, r in zip(gx, gy):
+            if c is None or r is None:
+                continue
+            if c not in col_to_row:
+                col_to_row[c] = r
+        items = sorted(col_to_row.items())  # left-to-right
+        for c, r in items:
+            xc = c - center
+            yc = center - r
+            if reserve_axes and (xc == 0 or yc == 0):
+                continue
+            key = (xc, yc)
+            if key not in seen:
+                seen.add(key)
+                out.append(key)
+    else:
+        # "grid": include all visited cells (deduped)
+        for c, r in zip(gx, gy):
+            if c is None or r is None:
+                continue
+            xc = c - center
+            yc = center - r
+            if reserve_axes and (xc == 0 or yc == 0):
+                continue
+            key = (xc, yc)
+            if key not in seen:
+                seen.add(key)
+                out.append(key)
+
+    # Stable, left-to-right sort (x then y)
+    out.sort(key=lambda p: (p[0], p[1]))
+    return [[a, b] for (a, b) in out]
 
 
 def _bresenham_line(x0: int, y0: int, x1: int, y1: int) -> List[Tuple[int, int]]:
@@ -259,6 +333,10 @@ def _bresenham_line(x0: int, y0: int, x1: int, y1: int) -> List[Tuple[int, int]]
 
 
 def _rasterize_path(gx: List[Optional[int]], gy: List[Optional[int]]) -> List[Dict[str, int]]:
+    """
+    Full stroke (with implicit pen-down along segments) — kept for debugging.
+    Not used for Arduino 2D-list mode, but returned as 'stroke' in /path for reference.
+    """
     path: List[Dict[str, int]] = []
     prev: Optional[Tuple[int,int]] = None
 
@@ -289,17 +367,69 @@ def _rasterize_path(gx: List[Optional[int]], gy: List[Optional[int]]) -> List[Di
 
     return path
 
+# -----------------------------------------------------------------------------
+# /path endpoint: 21×21 grid, centered cells list, optional serial send
+# -----------------------------------------------------------------------------
+
+def _maybe_send_to_arduino(cells: List[List[int]]) -> Dict[str, str]:
+    """
+    Optionally send cells over serial to an Arduino.
+    Requires:
+      - pip install pyserial
+      - env ARDUINO_PORT=/dev/ttyACM0 (or COM3 on Windows)
+      - optional env ARDUINO_BAUD=115200
+    Sends as one line of JSON: {"cells":[[x,y],...]}
+    """
+    port = os.getenv("ARDUINO_PORT", "").strip()
+    if not port:
+        return {"status": "skipped", "reason": "ARDUINO_PORT not set"}
+
+    try:
+        import serial  # type: ignore
+    except Exception:
+        return {"status": "skipped", "reason": "pyserial not installed"}
+
+    baud = int(os.getenv("ARDUINO_BAUD", "115200"))
+    payload = json.dumps({"cells": cells}, separators=(",", ":"))
+    try:
+        with serial.Serial(port, baudrate=baud, timeout=2) as ser:
+            ser.write(payload.encode("utf-8") + b"\n")
+        return {"status": "sent", "port": port, "baud": str(baud), "bytes": str(len(payload))}
+    except Exception as e:
+        return {"status": "error", "reason": str(e)}
 
 @app.route("/path")
 def path():
+    """
+    Query params:
+      expr, xmin, xmax, ymin, ymax
+      q:            half-extent (default 10) → grid is (2*q+1)x(2*q+1) = 21 when q=10
+      mode:         "bycol" (default) or "grid"
+      reserve_axes: "1" (default) to skip x=0 or y=0 cells (axes lines are reserved)
+      pretty:       "1" to pretty-print JSON
+      print:        "1" to print path to server console (debug)
+      send:         "1" to send cells to Arduino over serial (optional)
+
+    Returns JSON:
+      {
+        "grid": { "cols": 21, "rows": 21, "q": 10, "origin": "center" },
+        "meta": { "expr": "...", "xmin": ..., "xmax": ..., "ymin": ..., "ymax": ... },
+        "cells": [[x,y], ...],        # centered coords in [-q..q], axes skipped if reserve_axes=1
+        "stroke": [...],              # debug Bresenham strokes (grid indices), not needed by Arduino
+        "send_status": {...}          # present only if send=1
+      }
+    """
     expr_text = request.args.get("expr", "sin(x)")
     xmin = float(request.args.get("xmin", -10))
     xmax = float(request.args.get("xmax", 10))
     ymin = float(request.args.get("ymin", -10))
     ymax = float(request.args.get("ymax", 10))
     q = int(request.args.get("q", 10))
+    mode = (request.args.get("mode", "bycol") or "bycol").lower()
+    reserve_axes = (request.args.get("reserve_axes", "1") == "1")
     do_print = request.args.get("print", "0") == "1"
     pretty = request.args.get("pretty", "0") == "1"
+    do_send = request.args.get("send", "0") == "1"
 
     if xmin >= xmax:
         return jsonify({"error": "xmin must be less than xmax."}), 400
@@ -307,6 +437,8 @@ def path():
         return jsonify({"error": "ymin must be less than ymax."}), 400
     if q <= 0:
         return jsonify({"error": "q must be positive."}), 400
+    if mode not in ("bycol", "grid"):
+        return jsonify({"error": "mode must be 'bycol' or 'grid'."}), 400
 
     try:
         expr = parse_expression(expr_text)
@@ -322,19 +454,28 @@ def path():
             else:
                 ys.append(None)
 
-        gx, gy, cols, rows = _map_to_grid(xs, ys, xmin, xmax, ymin, ymax, q=q)
-        path_arr = _rasterize_path(gx, gy)
+        gx, gy, cols, rows = _map_to_grid_21(xs, ys, xmin, xmax, ymin, ymax, q=q)
 
-        payload = {
+        # Debug stroke (grid indices)
+        stroke = _rasterize_path(gx, gy)
+
+        # Arduino-friendly centered coordinates
+        cells_centered = _to_centered_cells(gx, gy, q=q, mode=mode, reserve_axes=reserve_axes)
+
+        payload: Dict[str, object] = {
             "grid": {"cols": cols, "rows": rows, "origin": "center", "q": q},
             "meta": {"expr": expr_text, "xmin": xmin, "xmax": xmax, "ymin": ymin, "ymax": ymax},
-            "path": path_arr
+            "cells": cells_centered,
+            "stroke": stroke,  # keep for debugging; Arduino can ignore
         }
 
         if do_print:
-            print("\n=== PATH ARRAY (len={}): ===".format(len(path_arr)))
-            print(json.dumps(path_arr, indent=2))
-            print("=== END PATH ARRAY ===\n")
+            print("\n=== CELLS (centered) len={} ===".format(len(cells_centered)))
+            print(json.dumps(cells_centered, indent=2))
+            print("=== END CELLS ===\n")
+
+        if do_send:
+            payload["send_status"] = _maybe_send_to_arduino(cells_centered)
 
         if pretty:
             return Response(json.dumps(payload, indent=2), mimetype="application/json")
@@ -370,7 +511,6 @@ No text outside JSON.
 """.strip()
 
 def _fallback_suggestions(expr: str, xmin: float, xmax: float) -> List[Dict[str, object]]:
-    """Local suggestions if OpenAI fails or is unavailable."""
     ex = (expr or "").replace(" ", "").lower()
 
     def rng(a, b):
@@ -381,7 +521,6 @@ def _fallback_suggestions(expr: str, xmin: float, xmax: float) -> List[Dict[str,
 
     rxmin, rxmax = rng(xmin, xmax)
 
-    # Trig
     if "sin(" in ex:
         return [
             {"label": "cos(x)",  "expr": "cos(x)",  "xmin": rxmin, "xmax": rxmax, "why": "Phase-shifted companion"},
@@ -401,7 +540,6 @@ def _fallback_suggestions(expr: str, xmin: float, xmax: float) -> List[Dict[str,
             {"label": "atan(x)", "expr": "atan(x)", "xmin": rxmin, "xmax": rxmax, "why": "Inverse behavior"},
         ]
 
-    # Linear & polynomial heuristics
     if ex in {"x", "+x"} or ex.startswith("1*x") or ex == "x*1":
         return [
             {"label": "Shift right", "expr": "x+1",   "xmin": rxmin, "xmax": rxmax, "why": "Simple translation"},
@@ -427,7 +565,6 @@ def _fallback_suggestions(expr: str, xmin: float, xmax: float) -> List[Dict[str,
             {"label": "exp","expr": "exp(x)", "xmin": rxmin, "xmax": rxmax, "why": "Inverse growth"},
         ]
 
-    # Generic
     return [
         {"label": "cos(x)",  "expr": "cos(x)",  "xmin": rxmin, "xmax": rxmax, "why": "Common companion"},
         {"label": "tan(x)",  "expr": "tan(x)",  "xmin": -5,    "xmax": 5,     "why": "Add asymptotes"},
@@ -450,10 +587,10 @@ def recommend():
         if not expr:
             return jsonify({"suggestions": []})
 
-        # Try OpenAI first
+        # Try OpenAI first (env-based); fallback if unavailable
         try:
             from openai import OpenAI
-            client = OpenAI(api_key="")
+            client = OpenAI()  # relies on OPENAI_API_KEY env var
             prompt = _recommend_prompt(expr, xmin, xmax, context_title=title)
 
             raw = None
@@ -463,7 +600,7 @@ def recommend():
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.6,
                     max_tokens=300,
-                    response_format={"type": "json_object"},  # strict JSON if supported
+                    response_format={"type": "json_object"},
                 )
                 raw = chat.choices[0].message.content.strip()
             except TypeError:
@@ -490,16 +627,14 @@ def recommend():
                 if clean:
                     return jsonify({"suggestions": clean})
             except Exception:
-                pass  # fall through to fallback
+                pass
 
         except Exception:
-            pass  # SDK/API key/network issues → use fallback
+            pass
 
-        # Fallbacks always return something meaningful
         return jsonify({"suggestions": _fallback_suggestions(expr, xmin, xmax)})
 
     except Exception as e:
-        # Last resort: still provide suggestions
         return jsonify({
             "suggestions": _fallback_suggestions("generic", -10, 10),
             "error": str(e)
