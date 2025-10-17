@@ -112,6 +112,25 @@
   .pill{
     border:1px solid var(--chip-hover);background:#fff;border-radius:999px;padding:.35rem .7rem;font-weight:600;font-size:.85rem
   }
+     .reco-chip{
+  border:1px solid var(--chip-hover);
+  background:#fff;
+  color:var(--text);
+  border-radius:999px;
+  padding:.35rem .7rem;
+  font-weight:600;
+  font-size:.85rem;
+  line-height:1;
+  cursor:pointer;
+  transition:background .12s ease, box-shadow .12s ease, border-color .12s ease, transform .12s ease;
+}
+.reco-chip:hover{
+  background:var(--chip-hover);
+  border-color:var(--ring);
+  box-shadow:0 6px 16px rgba(81,132,255,.12);
+  transform:translateY(-1px);
+}
+
 </style>
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
@@ -175,23 +194,7 @@
                   </div>
                 </div>
 
-                <!-- Hidden x-range row: we compute −60..60 anyway -->
-                <div class="row g-2 xrange-row">
-                  <div class="col">
-                    <label class="form-label fw-semibold">x min</label>
-                    <div class="input-group">
-                      <input id="xmin" name="xmin" value="{{ xmin or '-60' }}" class="form-control" placeholder="-60" required data-speech="true">
-                      <button class="btn btn-mic" type="button" aria-label="Dictate x min" title="Dictate">🎤</button>
-                    </div>
-                  </div>
-                  <div class="col">
-                    <label class="form-label fw-semibold">x max</label>
-                    <div class="input-group">
-                      <input id="xmax" name="xmax" value="{{ xmax or '60' }}" class="form-control" placeholder="60" required data-speech="true">
-                      <button class="btn btn-mic" type="button" aria-label="Dictate x max" title="Dictate">🎤</button>
-                    </div>
-                  </div>
-                </div>
+
 
                 <div>
                   <label class="form-label fw-semibold">Title (optional)</label>
@@ -335,13 +338,25 @@
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-  // ====== Constants (chart view vs. sampling range) ======
-  const DATA_XMIN = -60;   // sampling domain for the chart
+  // ------------------ Config ------------------
+  // Chart sampling (wide for smooth curves)
+  const DATA_XMIN = -60;
   const DATA_XMAX =  60;
-  const VIEW_XMIN = -20;   // what you show on screen
+
+  // On-screen view window (tight)
+  const VIEW_XMIN = -20;
   const VIEW_XMAX =  20;
 
-  // ====== DOM ======
+  // Fixed world bounds for /coords (metadata only for most backends)
+  const PATH_XMIN = -50;
+  const PATH_XMAX =  50;
+  const PATH_YMIN = -100;
+  const PATH_YMAX =  100;
+
+  // Device grid step to use with /coords (50-step granularity)
+  const STEP_FOR_COORDS = 50;
+
+  // ------------------ DOM refs ------------------
   const form  = document.getElementById('plot-form');
   const expr  = document.getElementById('expr');
   const title = document.getElementById('title');
@@ -355,8 +370,9 @@
   function setSendStatus(text){ if(sendStatus) sendStatus.textContent = text || ''; }
 
   let hasPlotted = false;
+  let lastPlot = null;
 
-  // ====== Chart.js setup ======
+  // ------------------ Chart ------------------
   const ctx = document.getElementById('chart');
   const chart = new Chart(ctx, {
     type: 'line',
@@ -364,14 +380,9 @@
     options: {
       responsive: true, maintainAspectRatio: false, animation: false,
       scales: {
-        x: {
-          type: 'linear',
-          min: VIEW_XMIN, max: VIEW_XMAX,
-          title: { display: true, text: 'x' },
-          grid: { display: false },
-          ticks: { stepSize: 1, callback: v => Number.isInteger(v) ? v : '' },
-          bounds: 'ticks',
-        },
+        x: { type: 'linear', title: { display: true, text: 'x' }, grid: { display: false },
+             ticks: { stepSize: 1, callback: v => Number.isInteger(v) ? v : '' }, bounds: 'ticks',
+             min: VIEW_XMIN, max: VIEW_XMAX },
         y: { title: { display: true, text: 'y' }, grid: { display: false } }
       },
       plugins: { legend: { display: false }, title: { display: true, text: '' }, tooltip: { mode: 'index', intersect: false } },
@@ -380,7 +391,7 @@
   });
 
   const graphEmpty = document.getElementById('graphEmpty');
-  function showGraphEmpty(show) { if (graphEmpty) graphEmpty.style.display = show ? 'flex' : 'none'; }
+  const showGraphEmpty = (show) => { if (graphEmpty) graphEmpty.style.display = show ? 'flex' : 'none'; };
   showGraphEmpty(true);
   if (pathStatus) pathStatus.textContent = 'No plot yet — enter an expression and click Plot.';
 
@@ -390,32 +401,45 @@
     chart.options.scales.y.grid.display = show;
   }
 
-  // ====== API helpers ======
+  // ------------------ API helpers ------------------
   function dataUrl() {
     const params = new URLSearchParams({
       expr: expr.value || 'sin(x)',
       xmin: String(DATA_XMIN),
-      xmax: String(DATA_XMAX),
-      _: Date.now().toString(),
+      xmax: String(DATA_XMAX)
     });
+    params.set('_', Date.now().toString());
     return `/data?${params.toString()}`;
   }
 
-  // ====== Plot flow ======
+  // Always include step=STEP_FOR_COORDS so backend uses 50-step ticks
+  function coordsUrl(exprValue, opts = {}) {
+    const params = new URLSearchParams({
+      expr: exprValue,
+      xmin: String(PATH_XMIN),
+      xmax: String(PATH_XMAX),
+      ymin: String(PATH_YMIN),
+      ymax: String(PATH_YMAX),
+      step: String(STEP_FOR_COORDS)   // <<<<<<<<<<<<<<<<<<<<<<<<<< important
+    });
+    if (opts.print) params.set('print', '1');
+    if (opts.send)  params.set('send',  '1');
+    params.set('_', Date.now().toString());
+    return `/coords?${params.toString()}`;
+  }
+
+  // ------------------ Plot flow ------------------
   async function updateChart() {
     if (errEl) errEl.textContent = '';
     if (pathStatus) pathStatus.textContent = 'Plotting…';
 
     try {
+      // 1) Plot sampled points for the on-screen chart
       const res = await fetch(dataUrl());
       const payload = await res.json();
       if (!res.ok) throw new Error(payload.error || 'Unknown error');
 
-      // Populate chart
-      const points = payload.x.map((xi, i) => {
-        const yv = payload.y[i];
-        return yv === null ? { x: xi, y: null } : { x: xi, y: yv };
-      });
+      const points = payload.x.map((xi, i) => ({ x: xi, y: payload.y[i] }));
       chart.data.datasets[0].data = points;
       chart.options.scales.x.min = VIEW_XMIN;
       chart.options.scales.x.max = VIEW_XMAX;
@@ -425,15 +449,24 @@
 
       showGraphEmpty(false);
       hasPlotted = true;
+
+      // 2) Save context for "Send"
+      lastPlot = { expr: payload.expr };
       setSendEnabled(true);
       setSendStatus('');
 
+      // 3) Ask backend to compute integer cells (print only)
+      const cRes = await fetch(coordsUrl(payload.expr, { print: true }));
+      const cPayload = await cRes.json();
+      if (!cRes.ok) throw new Error(cPayload.error || 'Path generation failed');
+
       if (pathStatus) {
-        pathStatus.textContent = `Plotted y = ${payload.expr}`;
-        setTimeout(() => { if (pathStatus.textContent.startsWith('Plotted')) pathStatus.textContent = ''; }, 2500);
+        const n = (cPayload?.cells?.length ?? 0);
+        pathStatus.textContent = `Path prepared (${n} cells @ step=${STEP_FOR_COORDS})`;
+        setTimeout(() => { if (pathStatus.textContent.includes('Path prepared')) pathStatus.textContent = ''; }, 3000);
       }
 
-      // Get recommendations (optional)
+      // 4) Recommendations (optional)
       await fetchRecommendations();
 
     } catch (e) {
@@ -443,63 +476,59 @@
       chart.update();
       showGraphEmpty(true);
       hasPlotted = false;
+      lastPlot = null;
       setSendEnabled(false);
       setSendStatus('');
       if (pathStatus) pathStatus.textContent = 'Could not plot. Check your expression.';
     }
   }
 
-  // ====== Send EXACT "y=<expr>\n" to Arduino via /send-expr ======
-  // Expects your Flask route:
-  //   POST /send-expr  JSON: {"expr": "x"}  -> {"status":"sent ..."} or {"error":"..."}
+  // ------------------ Send to device ------------------
   sendBtn?.addEventListener('click', async () => {
-    if (!hasPlotted) {
-      setSendStatus('Plot something first.');
-      return;
-    }
-    const e = (expr.value || '').trim();
-    if (!e) { setSendStatus('Enter an expression.'); return; }
+    if (!lastPlot) { setSendStatus('Plot something first.'); return; }
 
     try {
       setSendEnabled(false);
-      setSendStatus('Sending…');
+      setSendStatus('Sending to Arduino…');
 
-      const res = await fetch('/send-expr', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ expr: e })
-      });
+      const res = await fetch(coordsUrl(lastPlot.expr, { send: true }));
       const payload = await res.json();
-
       if (!res.ok) throw new Error(payload.error || 'Send failed.');
-    const msg = payload.send_status || payload.status || 'Unknown response';
-    setSendStatus(msg);
-    } catch (err) {
-      setSendStatus(`Error: ${err.message}`);
+
+      const msg = payload.send_status || `Sent ${(payload?.cells?.length ?? 0)} cells @ step=${STEP_FOR_COORDS}.`;
+      setSendStatus(msg);
+    } catch (e) {
+      setSendStatus(`Error: ${e.message}`);
     } finally {
       setSendEnabled(true);
     }
   });
 
-  // ====== Form + presets ======
-  form.addEventListener('submit', (e) => { e.preventDefault(); updateChart(); });
-
-  document.querySelectorAll('.preset, .ex').forEach(btn => {
+  // ------------------ Presets / examples ------------------
+  document.querySelectorAll('.preset').forEach(btn => {
     btn.addEventListener('click', () => {
-      expr.value = btn.dataset.expr || expr.value;
+      expr.value = btn.dataset.expr;
       title.value = '';
       grid.checked = true;
-      const help = window.bootstrap?.Modal.getInstance(document.getElementById('helpModal'));
+      if (pathStatus) pathStatus.textContent = 'Preset loaded — click Plot.';
+    });
+  });
+  document.querySelectorAll('.ex').forEach(chip => {
+    chip.addEventListener('click', () => {
+      expr.value = chip.dataset.expr;
+      title.value = '';
+      grid.checked = true;
+      const help = bootstrap.Modal.getInstance(document.getElementById('helpModal'));
       if (help) help.hide();
-      const ps = document.getElementById('pathStatus');
-      if (ps) ps.textContent = 'Example loaded — click Plot.';
+      if (pathStatus) pathStatus.textContent = 'Example loaded — click Plot.';
     });
   });
   document.getElementById('trySelected')?.addEventListener('click', () => {
     document.querySelector('.ex')?.click();
   });
+  form.addEventListener('submit', (e) => { e.preventDefault(); updateChart(); });
 
-  // ====== (Optional) Web Speech for inputs ======
+  // ------------------ Web Speech (optional) ------------------
   (function () {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     const statusEl = document.getElementById('srStatus');
@@ -513,7 +542,9 @@
       return;
     }
 
-    let recognition = null, activeBtn = null, activeInput = null;
+    let recognition = null;
+    let activeBtn = null;
+    let activeInput = null;
 
     function startRecognition(forInput, btn) {
       stopRecognition();
@@ -521,7 +552,8 @@
       recognition.lang = navigator.language || 'en-US';
       recognition.interimResults = false;
       recognition.maxAlternatives = 1;
-      activeBtn = btn; activeInput = forInput;
+      activeBtn = btn;
+      activeInput = forInput;
 
       btn.classList.add('listening');
       if (statusEl) statusEl.textContent = 'Listening…';
@@ -537,12 +569,15 @@
         if (statusEl) statusEl.textContent = '';
         recognition = null; activeBtn = null; activeInput = null;
       };
+
       try { recognition.start(); } catch (_) {}
     }
+
     function stopRecognition() {
       if (recognition) { try { recognition.stop(); } catch (_) {} recognition = null; }
       if (activeBtn) activeBtn.classList.remove('listening');
-      const se = document.getElementById('srStatus'); if (se) se.textContent = '';
+      const statusEl2 = document.getElementById('srStatus');
+      if (statusEl2) statusEl2.textContent = '';
     }
 
     document.querySelectorAll('input[data-speech="true"]').forEach((inputEl) => {
@@ -554,85 +589,54 @@
       });
       inputEl.addEventListener('keydown', (e) => { if (e.key === 'Escape') stopRecognition(); });
     });
+
     form?.addEventListener('submit', () => stopRecognition());
   })();
 
-  // ====== Recommendations (same visual; calls /recommend) ======
+  // ------------------ Recommendations ------------------
   const recoChips  = document.getElementById('recoChips');
   const recoWhy    = document.getElementById('recoWhy');
   const recoStatus = document.getElementById('recoStatus');
 
   function setRecoLoading(loading) {
     if (!recoStatus) return;
-    if (loading) {
-      recoStatus.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Finding ideas…';
-    } else {
-      recoStatus.textContent = '';
-    }
+    recoStatus.innerHTML = loading
+      ? '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Finding ideas…'
+      : '';
   }
-  function escapeHtml(s){
-    return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
-  }
+  function escapeHtml(s){ return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
   function renderRecommendations(list) {
     if (!recoChips || !recoWhy) return;
     recoChips.innerHTML = ''; recoWhy.innerHTML = '';
 
     if (!hasPlotted) {
-      recoChips.innerHTML = `
-        <div class="text-muted small">
-          Plot something to get smart suggestions. Try: <code>sin(x)</code>, <code>x**2</code>, or <code>x+1</code>.
-        </div>`;
+      recoChips.innerHTML = `<div class="text-muted small">Plot something to get smart suggestions. Try: <code>sin(x)</code>, <code>x**2</code>, or <code>x+1</code>.</div>`;
       return;
     }
-    if (!list || !list.length) {
-      recoChips.innerHTML = `
-        <div class="text-muted small">
-          No suggestions yet. Try quick tweaks:
-          <code>x+1</code>, <code>2*x</code>, <code>x**2</code>, <code>sin(x)</code>.
-        </div>`;
+    if (!list?.length) {
+      recoChips.innerHTML = `<div class="text-muted small">No suggestions yet. Quick tweaks: <code>x+1</code>, <code>2*x</code>, <code>x**2</code>, <code>sin(x)</code>.</div>`;
       return;
     }
-
-    list.forEach((sug) => {
+    list.forEach(s => {
       const chip = document.createElement('button');
-      chip.type = 'button';
-      chip.className = 'reco-chip';
-      chip.title = sug.why || '';
-      chip.textContent = sug.label ? `${sug.label} • ${sug.expr}` : sug.expr;
-      chip.addEventListener('click', () => {
-        expr.value  = sug.expr || expr.value;
-        if (!title.value && sug.label) title.value = sug.label;
-        updateChart();
-      });
+      chip.type = 'button'; chip.className = 'reco-chip';
+      chip.title = s.why || ''; chip.textContent = s.label ? `${s.label} • ${s.expr}` : s.expr;
+      chip.addEventListener('click', () => { expr.value = s.expr || expr.value; if (!title.value && s.label) title.value = s.label; updateChart(); });
       recoChips.appendChild(chip);
     });
-
-    const reasons = list.map(s => `• <strong>${s.expr}</strong>: ${escapeHtml(s.why || '')}`).join('<br/>');
-    recoWhy.innerHTML = `<div class="reco-note">${reasons}</div>`;
+    recoWhy.innerHTML = list.map(s => `• <strong>${s.expr}</strong>: ${escapeHtml(s.why || '')}`).join('<br/>');
   }
   async function fetchRecommendations() {
     try {
       setRecoLoading(true);
       const res = await fetch('/recommend', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          expr: expr.value || 'sin(x)',
-          xmin: DATA_XMIN,
-          xmax: DATA_XMAX,
-          title: title.value || ''
-        })
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ expr: expr.value || 'sin(x)', xmin: DATA_XMIN, xmax: DATA_XMAX, title: title.value || '' })
       });
       const payload = await res.json();
       renderRecommendations(payload.suggestions || []);
-    } catch {
-      renderRecommendations([]);
-    } finally {
-      setRecoLoading(false);
-    }
+    } catch { renderRecommendations([]); } finally { setRecoLoading(false); }
   }
-
-  // Initial state
   renderRecommendations([]);
 </script>
 
