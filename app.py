@@ -3,7 +3,7 @@ import json
 import math
 import sqlite3
 from functools import wraps
-from typing import List, Tuple, Dict, Optional
+from typing import List, Dict, Optional
 
 from flask import (
     Flask, render_template, request, jsonify, Response,
@@ -11,7 +11,7 @@ from flask import (
 )
 
 import numpy as np
-from sympy import symbols, lambdify
+from sympy import symbols, lambdify, diff, N
 from sympy.parsing.sympy_parser import (
     parse_expr,
     standard_transformations,
@@ -20,20 +20,13 @@ from sympy.parsing.sympy_parser import (
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 
-# Optional serial sending
-try:
-    import serial  # pyserial
-except Exception:
-    serial = None
-
 # -----------------------------------------------------------------------------
-# Config: default plot window and integer grid size
+# Config: default plot window
 # -----------------------------------------------------------------------------
-DATA_XMIN_DEFAULT = -9999
-DATA_XMAX_DEFAULT = 9999
-DATA_YMIN_DEFAULT = -9999.0
-DATA_YMAX_DEFAULT =  9999
-GRID_N = 91  # centered integer indices: -(N-1)//2 .. +(N-1)//2 (odd number required)
+DATA_XMIN_DEFAULT = -1999
+DATA_XMAX_DEFAULT = 1999
+DATA_YMIN_DEFAULT = -1999.0
+DATA_YMAX_DEFAULT = 1999
 
 # -----------------------------------------------------------------------------
 # Flask setup
@@ -65,154 +58,10 @@ def init_db() -> None:
 
 with app.app_context():
     init_db()
-@app.route("/coords")
-def coords():
-    """
-    Return sampled data for y=f(x) with optional y-clipping and formatting.
-    Also (optionally) produce integer 'cells' suitable for Arduino and send them.
 
-    Query params:
-      expr        : SymPy-parsable expression of x (default "sin(x)")
-      xmin,xmax   : float bounds for sampling (required-ish; defaults provided)
-      ymin,ymax   : optional y-clip window (both must be supplied to enable)
-      dx          : positive step size for sampling (default 0.1)
-      ndp         : int decimals for rounding x,y (e.g., 4 -> "2.9000" if fixed_str=1)
-      fixed_str   : "1"/"0" return x,y as fixed-width strings (needs ndp) (default "0")
-      cells       : "1"/"0" include integer cells path in response (default "0")
-      pretty      : "1"/"0" pretty-print JSON (default "0")
-      print       : "1"/"0" print payload to server console (default "0")
-      send        : "1"/"0" send cells to Arduino (implies computing cells) (default "0")
-    """
-    expr_text = request.args.get("expr", "sin(x)")
-
-    # world x-window (required)
-    xmin = float(request.args.get("xmin", DATA_XMIN_DEFAULT))
-    xmax = float(request.args.get("xmax", DATA_XMAX_DEFAULT))
-
-    # y-window is OPTIONAL: only clip if BOTH are provided
-    ymin_s = request.args.get("ymin")
-    ymax_s = request.args.get("ymax")
-    yclip = (ymin_s is not None) and (ymax_s is not None)
-    if yclip:
-        ymin = float(ymin_s)
-        ymax = float(ymax_s)
-
-    # sampling + formatting
-    dx = float(request.args.get("dx", 1))
-    ndp_param = request.args.get("ndp", None)
-    ndp = int(ndp_param) if (ndp_param not in (None, "")) else None
-    if ndp is not None:
-        ndp = max(0, min(ndp, 8))
-    fixed_str = request.args.get("fixed_str", "0") == "1"
-
-    want_cells = request.args.get("cells", "0") == "1"
-    do_print   = request.args.get("print", "0") == "1"
-    pretty     = request.args.get("pretty", "0") == "1"
-    do_send    = request.args.get("send", "0") == "1"
-    if do_send:
-        want_cells = True  # we need cells to send to Arduino
-
-    # basic validation
-    if dx <= 0:
-        return jsonify({"error": "dx must be positive."}), 400
-    if xmin >= xmax:
-        return jsonify({"error": "xmin must be less than xmax."}), 400
-    if yclip and ymin >= ymax:
-        return jsonify({"error": "ymin must be less than ymax."}), 400
-
-    try:
-        # parse + function
-        expr = parse_expression(expr_text)
-        f = lambdify(x, expr, modules=["numpy"])
-
-        # build uniform sample; round xi to 'ndp' to avoid 0.30000000004 drift
-        steps = int(math.floor((xmax - xmin) / dx)) + 1
-        xi = xmin + np.arange(steps, dtype=float) * dx
-        if ndp is not None:
-            xi = np.round(xi, ndp)
-
-        yi = f(xi)
-
-        # keep finite real values; optional y-clip
-        ys: List[Optional[float]] = []
-        for v in np.array(yi, dtype=np.complex128):
-            if not np.isfinite(v.real) or abs(v.imag) >= 1e-12:
-                ys.append(None)
-                continue
-            val = float(v.real)
-            if yclip and not (ymin <= val <= ymax):
-                ys.append(None)
-                continue
-            ys.append(val)
-
-        # float points payload (rounded + optional fixed strings)
-        if yclip:
-            ylo, yhi = ymin, ymax
-        else:
-            # if not clipping, keep entire plotting window for meta visibility
-            ylo, yhi = DATA_YMIN_DEFAULT, DATA_YMAX_DEFAULT
-
-        points = _to_points_raw_float(
-            xi, ys, xmin, xmax, ylo, yhi, ndp=ndp, fixed_str=fixed_str
-        )
-
-        payload: Dict[str, object] = {
-            "meta": {
-                "expr": expr_text,
-                "xmin": xmin, "xmax": xmax,
-                **({"ymin": ylo, "ymax": yhi} if yclip else {}),
-                "dx": dx,
-                "ndp": ndp,
-                "fixed_str": fixed_str,
-                "mode": "coords",
-                "clipped_by_y": bool(yclip),
-            },
-            "points": points,
-        }
-
-        # integer cells (optional; *no normalization*, Bresenham-connected)
-        # integer cells (optional; *no normalization*, Bresenham-connected)
-        if want_cells:
-            xi_int_min = int(round(xmin))
-            xi_int_max = int(round(xmax))
-            yi_int_min = int(round(ylo))
-            yi_int_max = int(round(yhi))
-
-            cells = _to_cells_raw(
-                xi, ys,
-                xi_int_min, xi_int_max,
-                yi_int_min, yi_int_max
-            )
-            payload["cells"] = cells
-
-            if do_send:
-                # --- NEW: print EXACT payload line that will be sent
-                line = str(cells) + "\n"
-                print("\n=== TX → Arduino (/coords) ===")
-                print(line, end="")  # prints the exact bytes-as-text
-                print("=== END TX ===\n")
-                # --- NEW: also echo back in HTTP JSON (handy for debugging)
-                payload["sent_payload"] = cells
-
-                send_status = _send_cells_to_arduino(cells)
-                payload["send_status"] = send_status
-
-        # optional print to server console
-        if do_print:
-            print("\n=== COORDS ===")
-            to_print = payload if pretty else {k: payload[k] for k in ("meta", "points", *(("cells",) if "cells" in payload else ()), *(("send_status",) if "send_status" in payload else ()))}
-            print(json.dumps(to_print, indent=2))
-            print("=== END COORDS ===\n")
-
-        return Response(
-            json.dumps(payload, indent=2) if pretty else json.dumps(payload),
-            mimetype="application/json"
-        )
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 400
-
-
+# -----------------------------------------------------------------------------
+# Auth helpers
+# -----------------------------------------------------------------------------
 def current_user():
     uid = session.get("user_id")
     if not uid:
@@ -270,7 +119,6 @@ def register():
 
     return render_template("register.html")
 
-
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
@@ -295,7 +143,6 @@ def login():
 
     return render_template("login.html")
 
-
 @app.route("/logout")
 def logout():
     session.clear()
@@ -303,7 +150,7 @@ def logout():
     return redirect(url_for("home"))
 
 # -----------------------------------------------------------------------------
-# Math / Grapher
+# Sympy parsing
 # -----------------------------------------------------------------------------
 x = symbols("x")
 TRANSFORMS = standard_transformations + (
@@ -319,6 +166,9 @@ def parse_expression(expr_text: str):
         raise ValueError("Use only the variable x in your expression.")
     return expr
 
+# -----------------------------------------------------------------------------
+# Basic pages
+# -----------------------------------------------------------------------------
 @app.route("/", methods=["GET", "POST"])
 def home():
     return render_template("landing.html")
@@ -332,10 +182,13 @@ def main():
     grid = request.form.get("grid", "on")
     title = request.form.get("title", "")
     return render_template(
-        "index.html",
+        "index2.html",
         expr=expr_text, xmin=xmin, xmax=xmax, grid=grid, title=title
     )
 
+# -----------------------------------------------------------------------------
+# /data — sampling for on-screen plot (no coordinate/cell mapping)
+# -----------------------------------------------------------------------------
 @app.route("/data")
 def data():
     expr_text = request.args.get("expr", "sin(x)")
@@ -366,519 +219,6 @@ def data():
         return jsonify({"error": str(e)}), 400
 
 # -----------------------------------------------------------------------------
-# Grid mapping helpers (centered integer grid, size N)
-# -----------------------------------------------------------------------------
-# def _square_window(xmin: float, xmax: float, ymin: float, ymax: float) -> Tuple[float, float, float]:
-#     cx = 0.5 * (xmin + xmax)
-#     cy = 0.5 * (ymin + ymax)
-#     half_x = max(1e-12, 0.5 * (xmax - xmin))
-#     half_y = max(1e-12, 0.5 * (ymax - ymin))
-#     half_span = max(half_x, half_y)
-#     return cx, cy, half_span
-#
-# def _bresenham_int(x0: int, y0: int, x1: int, y1: int) -> List[Tuple[int,int]]:
-#     points: List[Tuple[int, int]] = []
-#     dx = abs(x1 - x0)
-#     sx = 1 if x0 < x1 else -1
-#     dy = -abs(y1 - y0)
-#     sy = 1 if y0 < y1 else -1
-#     err = dx + dy
-#     x, y = x0, y0
-#     while True:
-#         points.append((x, y))
-#         if x == x1 and y == y1:
-#             break
-#         e2 = 2 * err
-#         if e2 >= dy:
-#             err += dy
-#             x += sx
-#         if e2 <= dx:
-#             err += dx
-#             y += sy
-#     return points
-#
-# def _to_centered_cells_N(
-#     xs, ys, xmin, xmax, ymin, ymax,
-#     N=GRID_N, skip_axes=False, center_on_window=True  # NEW FLAG
-# ):
-#     if N % 2 == 0:
-#         raise ValueError("N must be odd ...")
-#     half = (N - 1)//2
-#
-#     if center_on_window:
-#         cx, cy, half_span = _square_window(xmin, xmax, ymin, ymax)
-#     else:
-#         cx, cy = 0.0, 0.0
-#         half_x = max(abs(xmin), abs(xmax))
-#         half_y = max(abs(ymin), abs(ymax))
-#         half_span = max(1e-12, half_x, half_y)
-#
-#     s = half / half_span
-#
-#     def inside_soft(ixf: float, iyf: float) -> bool:
-#         # allow half+0.5 to keep rounding within [-half..half]
-#         bound = half + 0.5
-#         return -bound <= ixf <= bound and -bound <= iyf <= bound
-#
-#     grid_pts: List[Tuple[int,int]] = []
-#     last_int: Optional[Tuple[int,int]] = None
-#
-#     for xx, yy in zip(xs, ys):
-#         if yy is None or not (math.isfinite(xx) and math.isfinite(yy)):
-#             last_int = None
-#             continue
-#
-#         gx = (xx - cx) * s
-#         gy = (yy - cy) * s
-#
-#         if not inside_soft(gx, gy):
-#             last_int = None
-#             continue
-#
-#         ix = int(round(gx))
-#         iy = int(round(gy))
-#         ix = max(-half, min(half, ix))
-#         iy = max(-half, min(half, iy))
-#
-#         if skip_axes and (ix == 0 or iy == 0):
-#             last_int = None
-#             continue
-#
-#         cur = (ix, iy)
-#         if last_int is None:
-#             if not grid_pts or grid_pts[-1] != cur:
-#                 grid_pts.append(cur)
-#             last_int = cur
-#             continue
-#
-#         if cur == last_int:
-#             continue
-#
-#         for px, py in _bresenham_int(last_int[0], last_int[1], cur[0], cur[1]):
-#             if skip_axes and (px == 0 or py == 0):
-#                 continue
-#             if not grid_pts or grid_pts[-1] != (px, py):
-#                 grid_pts.append((px, py))
-#
-#         last_int = cur
-#
-#     return grid_pts
-def _bresenham_int(x0: int, y0: int, x1: int, y1: int):
-    points = []
-    dx = abs(x1 - x0)
-    sx = 1 if x0 < x1 else -1
-    dy = -abs(y1 - y0)
-    sy = 1 if y0 < y1 else -1
-    err = dx + dy
-    x, y = x0, y0
-    while True:
-        points.append((x, y))
-        if x == x1 and y == y1:
-            break
-        e2 = 2 * err
-        if e2 >= dy:
-            err += dy
-            x += sx
-        if e2 <= dx:
-            err += dx
-            y += sy
-    return points
-
-def _to_centered_cells_N(
-    xs: np.ndarray,
-    ys: List[Optional[float]],
-    xmin: float, xmax: float,
-    ymin: float, ymax: float,
-    N: int = GRID_N,
-    skip_axes: bool = False
-) -> List[Tuple[int,int]]:
-    """
-    Map (x,y) into integer cells on a centered N×N grid using the *given*
-    fixed world ranges only. No re-centering, no square normalization.
-
-    x in [xmin,xmax] -> ix in [-half, +half]
-    y in [ymin,ymax] -> iy in [-half, +half]
-
-    We choose symmetric scaling so that x=0 -> ix=0 and y=0 -> iy=0.
-    """
-    if N % 2 == 0:
-        raise ValueError("N must be odd so the grid is symmetric around zero.")
-    half = (N - 1) // 2
-
-    # Independent symmetric scales for x and y
-    # Use the largest magnitude so 0 maps to cell 0 and bounds map near ±half
-    sx = half / max(abs(xmin), abs(xmax), 1e-12)
-    sy = half / max(abs(ymin), abs(ymax), 1e-12)
-
-    def inside_soft(ixf: float, iyf: float) -> bool:
-        # allow ±(half+0.5) so rounding stays in-bounds
-        bound = half + 0.5
-        return -bound <= ixf <= bound and -bound <= iyf <= bound
-
-    grid_pts: List[Tuple[int,int]] = []
-    last_int: Optional[Tuple[int,int]] = None
-
-    for xx, yy in zip(xs, ys):
-        if yy is None or not (math.isfinite(xx) and math.isfinite(yy)):
-            last_int = None
-            continue
-
-        # Direct symmetric scale about 0; NO recentring
-        gx = xx * sx
-        gy = yy * sy
-
-        if not inside_soft(gx, gy):
-            last_int = None
-            continue
-
-        ix = int(round(gx))
-        iy = int(round(gy))
-        ix = max(-half, min(half, ix))
-        iy = max(-half, min(half, iy))
-
-        if skip_axes and (ix == 0 or iy == 0):
-            last_int = None
-            continue
-
-        cur = (ix, iy)
-        if last_int is None:
-            if not grid_pts or grid_pts[-1] != cur:
-                grid_pts.append(cur)
-            last_int = cur
-            continue
-
-        if cur == last_int:
-            continue
-
-        for px, py in _bresenham_int(last_int[0], last_int[1], cur[0], cur[1]):
-            if skip_axes and (px == 0 or py == 0):
-                continue
-            if not grid_pts or grid_pts[-1] != (px, py):
-                grid_pts.append((px, py))
-
-        last_int = cur
-
-    return grid_pts
-
-# -----------------------------------------------------------------------------
-# Legacy raster helpers (kept for compatibility / debugging)
-# -----------------------------------------------------------------------------
-def _map_to_grid(xs: np.ndarray, ys: List[Optional[float]],
-                 xmin: float, xmax: float, ymin: float, ymax: float, q: int = 10
-                 ) -> Tuple[List[Optional[int]], List[Optional[int]], int, int]:
-    cols = rows = 2 * q
-    sx = (cols - 1) / (xmax - xmin) if xmax != xmin else 1.0
-    sy = (rows - 1) / (ymax - ymin) if ymax != ymin else 1.0
-
-    gx: List[Optional[int]] = []
-    gy: List[Optional[int]] = []
-
-    for xx, y in zip(xs, ys):
-        if y is None or (isinstance(y, float) and not math.isfinite(y)):
-            gx.append(None); gy.append(None); continue
-        if not (math.isfinite(xx) and math.isfinite(y)):
-            gx.append(None); gy.append(None); continue
-        if y < ymin or y > ymax or xx < xmin or xx > xmax:
-            gx.append(None); gy.append(None); continue
-
-        col = int(round((xx - xmin) * sx))
-        row = int(round((y  - ymin) * sy))
-        col = max(0, min(cols - 1, col))
-        row = max(0, min(rows - 1, row))
-        gx.append(col); gy.append(row)
-
-    return gx, gy, cols, rows
-
-def _bresenham_line(x0: int, y0: int, x1: int, y1: int) -> List[Tuple[int, int]]:
-    points: List[Tuple[int, int]] = []
-    dx = abs(x1 - x0)
-    dy = -abs(y1 - y0)
-    sx = 1 if x0 < x1 else -1
-    sy = 1 if y0 < y1 else -1
-    err = dx + dy
-    x, y = x0, y0
-    while True:
-        points.append((x, y))
-        if x == x1 and y == y1:
-            break
-        e2 = 2 * err
-        if e2 >= dy:
-            err += dy
-            x += sx
-        if e2 <= dx:
-            err += dx
-            y += sy
-    return points
-
-def _rasterize_path(gx: List[Optional[int]], gy: List[Optional[int]]) -> List[Dict[str, int]]:
-    path: List[Dict[str, int]] = []
-    prev: Optional[Tuple[int,int]] = None
-
-    i = 0
-    n = len(gx)
-    while i < n:
-        while i < n and (gx[i] is None or gy[i] is None):
-            prev = None
-            i += 1
-        if i >= n:
-            break
-
-        start = (gx[i], gy[i])
-        if prev != start:
-            path.append({"x": start[0], "y": start[1], "pen": 0})
-            prev = start
-        i += 1
-
-        while i < n and gx[i] is not None and gy[i] is not None:
-            p = (gx[i], gy[i])
-            if p != prev:
-                for (cx, cy) in _bresenham_line(prev[0], prev[1], p[0], p[1]):
-                    if path and path[-1]["x"] == cx and path[-1]["y"] == cy:
-                        continue
-                    path.append({"x": cx, "y": cy, "pen": 1})
-                prev = p
-            i += 1
-
-    return path
-
-
-def _to_cells_raw(
-    xs: np.ndarray,
-    ys: List[Optional[float]],
-    xmin: int, xmax: int,
-    ymin: int, ymax: int
-) -> List[Tuple[int, int]]:
-    """
-    Map samples directly to integer (x,y) with no normalization.
-    - Round x,y to nearest ints.
-    - Clip to [xmin,xmax] × [ymin,ymax].
-    - Connect successive valid points with Bresenham.
-    """
-    pts: List[Tuple[int, int]] = []
-    last: Optional[Tuple[int, int]] = None
-
-    def inside(ix: int, iy: int) -> bool:
-        return xmin <= ix <= xmax and ymin <= iy <= ymax
-
-    for xx, yy in zip(xs, ys):
-        if yy is None or not (math.isfinite(xx) and math.isfinite(yy)):
-            last = None
-            continue
-
-        ix = int(round(xx))
-        iy = int(round(yy))
-
-        if not inside(ix, iy):
-            last = None
-            continue
-
-        cur = (ix, iy)
-        if last is None:
-            if not pts or pts[-1] != cur:
-                pts.append(cur)
-            last = cur
-            continue
-
-        if cur == last:
-            continue
-
-        # Densify with Bresenham, then clip inside window
-        for px, py in _bresenham_line(last[0], last[1], cur[0], cur[1]):
-            if inside(px, py) and (not pts or pts[-1] != (px, py)):
-                pts.append((px, py))
-
-        last = cur
-
-    return pts
-def _to_points_raw_float(
-    xs: np.ndarray,
-    ys: List[Optional[float]],
-    xmin: float, xmax: float,
-    ymin: float, ymax: float,
-    ndp: Optional[int] = None,
-    fixed_str: bool = False,
-) -> List[Tuple[float, float]]:
-    """
-    Keep raw (x,y) as floats, clip to [xmin,xmax]×[ymin,ymax], optional rounding.
-    If fixed_str=True, return ('x','y') as strings with ndp fixed decimals.
-    """
-    pts: List[Tuple[float, float]] = []
-    for xx, yy in zip(xs, ys):
-        if yy is None or not (math.isfinite(xx) and math.isfinite(yy)):
-            continue
-        if not (xmin <= xx <= xmax and ymin <= yy <= ymax):
-            continue
-
-        if ndp is not None:
-            xx_r = round(float(xx), ndp)
-            yy_r = round(float(yy), ndp)
-        else:
-            xx_r = float(xx)
-            yy_r = float(yy)
-
-        if fixed_str and ndp is not None:
-            fmt = f"{{:.{ndp}f}}"
-            pts.append((fmt.format(xx_r), fmt.format(yy_r)))
-        else:
-            pts.append((xx_r, yy_r))
-
-    return pts
-
-# -----------------------------------------------------------------------------
-# /path — centered cells on GRID_N × GRID_N + optional serial send
-# -----------------------------------------------------------------------------
-@app.route("/path")
-def path():
-    """
-    Build path data for the current expression.
-
-    Query params:
-      expr          : string  (e.g., "x", "sin(x)")
-      xmin, xmax    : floats  (world x window)
-      ymin, ymax    : floats  (world y window)
-      dx            : float   sampling step for float mode (default 0.1)
-      float_points  : "1"/"0" emit raw float (x,y) pairs instead of integer cells (default "0")
-      ndp           : int     number of decimal places to round x,y to in float mode; omit to keep raw
-      fixed_str     : "1"/"0" if "1", return fixed-width strings with trailing zeros (requires ndp)
-      print         : "1"/"0" print payload to server console
-      pretty        : "1"/"0" pretty-print JSON
-      send          : "1"/"0" send payload to Arduino via _send_cells_to_arduino()
-    """
-    expr_text = request.args.get("expr", "sin(x)")
-    xmin = float(request.args.get("xmin", -30))
-    xmax = float(request.args.get("xmax",  30))
-    ymin = float(request.args.get("ymin", -25))
-    ymax = float(request.args.get("ymax",  25))
-
-    # Sampling + float formatting
-    dx = float(request.args.get("dx", 1))                  # step for float mode
-    float_mode = request.args.get("float_points", "0") == "1"
-
-    ndp_param = request.args.get("ndp", 3)                # decimals for rounding
-    ndp = int(ndp_param) if ndp_param is not None and ndp_param != "" else None
-    if ndp is not None:
-        ndp = max(0, min(ndp, 8))                            # clamp to a sensible range
-
-    fixed_str = request.args.get("fixed_str", "1") == "1"    # keep trailing zeros as strings
-
-    do_print = request.args.get("print", "0") == "1"
-    pretty   = request.args.get("pretty", "0") == "1"
-    do_send  = request.args.get("send", "0") == "1"
-
-    # Basic validation
-    if xmin >= xmax:
-        return jsonify({"error": "xmin must be less than xmax."}), 400
-    if ymin >= ymax:
-        return jsonify({"error": "ymin must be less than ymax."}), 400
-    if dx <= 0:
-        return jsonify({"error": "dx must be positive."}), 400
-
-    try:
-        # Parse + make function
-        expr = parse_expression(expr_text)
-        f = lambdify(x, expr, modules=["numpy"])
-
-        if float_mode:
-            # -------- FLOAT MODE (uniform step dx, optional rounding/formatting) --------
-            # Build uniform sample; round xi to ndp to avoid binary drift like 0.30000000004
-            steps = int(math.floor((xmax - xmin) / dx)) + 1
-            xi = xmin + np.arange(steps, dtype=float) * dx
-            if ndp is not None:
-                xi = np.round(xi, ndp)
-
-            yi_val = f(xi)
-            ys: List[Optional[float]] = []
-            for v in np.array(yi_val, dtype=np.complex128):
-                if np.isfinite(v.real) and abs(v.imag) < 1e-12:
-                    ys.append(float(v.real))
-                else:
-                    ys.append(None)
-
-            points = _to_points_raw_float(
-                xi, ys, xmin, xmax, ymin, ymax,
-                ndp=ndp, fixed_str=fixed_str
-            )
-
-            payload = {
-                "meta": {
-                    "expr": expr_text,
-                    "xmin": xmin, "xmax": xmax,
-                    "ymin": ymin, "ymax": ymax,
-                    "normalized": False,
-                    "dx": dx,
-                    "mode": "float_points",
-                    "ndp": ndp,
-                    "fixed_str": fixed_str
-                },
-                "points": points
-            }
-
-            if do_print:
-                print("\n=== POINTS (float) len={} ===".format(len(points)))
-                print(json.dumps(points, indent=2))
-                print("=== END POINTS ===\n")
-
-            if do_send:
-                # If Arduino expects text with fixed decimals, call with fixed_str=1 & ndp set.
-                send_status = _send_cells_to_arduino(points)
-                payload["send_status"] = send_status
-
-            return Response(
-                json.dumps(payload, indent=2) if pretty else json.dumps(payload),
-                mimetype="application/json"
-            )
-
-        else:
-            # -------- INTEGER CELL MODE (legacy; integer rounding + Bresenham) --------
-            # Sample densely enough so Bresenham has smooth segments; use integer x’s
-            xi = np.arange(int(math.ceil(xmin)), int(math.floor(xmax)) + 1, dtype=float)
-
-            yi_val = f(xi)
-            ys: List[Optional[float]] = []
-            for v in np.array(yi_val, dtype=np.complex128):
-                if np.isfinite(v.real) and abs(v.imag) < 1e-12:
-                    ys.append(float(v.real))
-                else:
-                    ys.append(None)
-
-            # Use integer-window clipping exactly as before
-            cells_raw = _to_cells_raw(
-                xi, ys,
-                int(round(xmin)), int(round(xmax)),
-                int(round(ymin)), int(round(ymax))
-            )
-
-            payload = {
-                "meta": {
-                    "expr": expr_text,
-                    "xmin": int(round(xmin)), "xmax": int(round(xmax)),
-                    "ymin": int(round(ymin)), "ymax": int(round(ymax)),
-                    "normalized": False,
-                    "dx": dx,
-                    "mode": "int_cells"
-                },
-                "cells": cells_raw
-            }
-
-            if do_print:
-                print("\n=== CELLS (raw int) len={} ===".format(len(cells_raw)))
-                print(json.dumps(cells_raw, indent=2))
-                print("=== END CELLS ===\n")
-
-            if do_send:
-                send_status = _send_cells_to_arduino(cells_raw)
-                payload["send_status"] = send_status
-
-            return Response(
-                json.dumps(payload, indent=2) if pretty else json.dumps(payload),
-                mimetype="application/json"
-            )
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 400
-
-
-# -----------------------------------------------------------------------------
 # OpenAI Recommendations (optional; falls back if API not available)
 # -----------------------------------------------------------------------------
 RECO_MODEL = os.getenv("RECO_MODEL", "gpt-4o-mini")
@@ -902,6 +242,7 @@ Task:
 4) so for example if user draw y=x, then may be y=x+1 or y=2x etc
 No text outside JSON.{title_part}
 """.strip()
+
 def _fallback_suggestions(expr: str, xmin: float, xmax: float) -> List[Dict[str, object]]:
     ex = (expr or "").replace(" ", "").lower()
 
@@ -1020,245 +361,360 @@ def recommend():
             "suggestions": _fallback_suggestions("generic", DATA_XMIN_DEFAULT, DATA_XMAX_DEFAULT),
             "error": str(e)
         }), 200
-
 # -----------------------------------------------------------------------------
-# Helpers used by combo routes
+# Integer path (steps of 100) + Arduino send
 # -----------------------------------------------------------------------------
-def _compute_cells_centered(expr_text: str, xmin: float, xmax: float,
-                            ymin: float, ymax: float, N: int = GRID_N
-                           ) -> List[Tuple[int, int]]:
-    """Return centered grid cells for the given expression and window."""
-    expr = parse_expression(expr_text)
-    f = lambdify(x, expr, modules=["numpy"])
-    xs = np.linspace(xmin, xmax, 1200)
-    ys_val = f(xs)
+# -----------------------------------------------------------------------------
+# Integer path (steps of 100) + Arduino send (UPDATED)
+# -----------------------------------------------------------------------------
+try:
+    import serial  # optional
+except Exception:
+    serial = None
 
-    ys: List[Optional[float]] = []
-    for v in np.array(ys_val, dtype=np.complex128):
-        if np.isfinite(v.real) and abs(v.imag) < 1e-12:
-            ys.append(float(v.real))
-        else:
-            ys.append(None)
-
-    cells_centered = _to_centered_cells_N(xs, ys, xmin, xmax, ymin, ymax, N=N, skip_axes=False)
-    return cells_centered
-
-def _send_cells_to_arduino(cells: List[Tuple[int,int]]) -> str:
-    """Send the given cells to Arduino. Returns a status string."""
-    port = os.getenv("ARDUINO_PORT", "/dev/tty.usbserial-130")
+STEP_SIZE = 100                 # each grid tick = 100 motor steps
+STEP_MIN  = -2900               # clamp in step space
+STEP_MAX  =  2900
+DOMAIN_FULL_SCALE = STEP_MAX / STEP_SIZE   # 29.0 domain units corresponds to 2900 steps
+Y_TARGET_DOMAIN   = DOMAIN_FULL_SCALE * 0.9  # target typical magnitude (~26.1) to avoid clamp
+def _send_cells_to_arduino(cells, echo_preview_chars: int = 200, read_seconds: float = 5.0):
+    """
+    Send cells as a single JSON line and print TX/RX to server stdout (PyCharm).
+    Example TX: {"cells":[[0,0],[100,100],...]}
+    Also reads back lines for up to read_seconds and prints them with <<< prefix.
+    """
+    port = os.getenv("ARDUINO_PORT", "/dev/tty.usbserial-1140")
     baud = int(os.getenv("ARDUINO_BAUD", "9600"))
     if not port:
+        print(">>> [ARDUINO TX] SKIP (ARDUINO_PORT not set)")
         return "ARDUINO_PORT not set"
     if serial is None:
+        print(">>> [ARDUINO TX] SKIP (pyserial not available)")
         return "pyserial not available"
+
     try:
         import time
-        with serial.Serial(port, baudrate=baud, timeout=10) as ser:
-            time.sleep(2)                 # allow Arduino auto-reset
-            ser.reset_input_buffer()      # clear boot noise
-            line = str(cells) + "\n"      # one-line payload
+        line = json.dumps({"cells": cells}, separators=(",", ":")) + "\n"
+
+        # ---- TX preview ----
+        preview = line[:echo_preview_chars] + (" ...[truncated]" if len(line) > echo_preview_chars else "")
+        print(f">>> [ARDUINO TX] {preview}")
+        print(f">>> [ARDUINO TX] cells_count={len(cells)} port={port} baud={baud}")
+
+        with serial.Serial(port, baudrate=baud, timeout=0.5) as ser:
+            time.sleep(2.0)  # let the board auto-reset & open its port
+            ser.reset_input_buffer()
+            ser.reset_output_buffer()
+
+            # write & flush
             ser.write(line.encode("utf-8"))
-            # Optional: read a few seconds of responses for debugging
+            ser.flush()
+
+            # ---- RX loop ----
             t0 = time.time()
-            while time.time() - t0 < 3:
-                rx = ser.readline().decode(errors="ignore").strip()
+            rx_log = []
+            while time.time() - t0 < read_seconds:
+                try:
+                    rx = ser.readline().decode("utf-8", errors="ignore").strip()
+                except Exception:
+                    rx = ""
                 if rx:
-                    print("Arduino:", rx)
-        return f"sent {len(cells)} cells to {port}@{baud}"
+                    rx_log.append(rx)
+                    print(f"<<< [ARDUINO RX] {rx}")
+
+        # short summary for HTTP response payload
+        head = ", ".join(rx_log[:3]) if rx_log else ""
+        return f"sent {len(cells)} cells to {port}@{baud}; rx_lines={len(rx_log)}; head='{head[:120]}'"
+
     except Exception as e:
+        print(f"!!! [ARDUINO ERR] {e}")
         return f"send failed: {e}"
 
-def _generate_recommendations(expr_text: str, xmin: float, xmax: float, title: Optional[str] = None
-                             ) -> List[Dict[str, object]]:
-    """Try OpenAI-based recommendations; fall back to local suggestions."""
-    try:
-        from openai import OpenAI
-        client = OpenAI()
-        prompt = _recommend_prompt(expr_text, xmin, xmax, context_title=title)
-        raw = None
-        try:
-            chat = client.chat.completions.create(
-                model=RECO_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.6,
-                max_tokens=300,
-                response_format={"type": "json_object"},
-            )
-            raw = chat.choices[0].message.content.strip()
-        except TypeError:
-            chat = client.chat.completions.create(
-                model=RECO_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.6,
-                max_tokens=300,
-            )
-            raw = chat.choices[0].message.content.strip()
 
-        data = json.loads(raw)
-        suggestions = data.get("suggestions", [])[:3]
-        clean: List[Dict[str, object]] = []
-        for s in suggestions:
-            clean.append({
-                "label": str(s.get("label", "Suggestion")),
-                "expr": str(s.get("expr", "sin(x)")),
-                "xmin": int(s.get("xmin", DATA_XMIN_DEFAULT)),
-                "xmax": int(s.get("xmax", DATA_XMAX_DEFAULT)),
-                "why":  str(s.get("why", "Looks interesting"))
-            })
-        if clean:
-            return clean
+def to_step(v: float) -> int:
+    """
+    Convert a *domain* value v to the nearest 100-step tick and clamp.
+    Domain 1.0 -> 100 steps, so outputs are ..., -2900, -2800, ... , 2900.
+    """
+    s = int(round(v)) * STEP_SIZE
+    return max(STEP_MIN, min(STEP_MAX, s))
+
+def _build_centered_step_xs() -> list[int]:
+    """
+    X sequence in *step space* starting at 0:
+    0, +100, +200, ... +2900, then -100, -200, ... -2900
+    """
+    pos = [i * STEP_SIZE for i in range(0, STEP_MAX // STEP_SIZE + 1)]     # 0..2900
+    neg = [-i * STEP_SIZE for i in range(1, STEP_MAX // STEP_SIZE + 1)]     # -100..-2900
+    return pos + neg
+def _autoscale_gain(
+    y_vals: np.ndarray,
+    target_domain: float = Y_TARGET_DOMAIN,
+    allow_upscale: bool = True,
+    max_upscale: float = None,   # None => no explicit cap (still clamped by step limits)
+) -> float:
+    """
+    Choose a gain so the 98th percentile of |y| lands near ±target_domain.
+    If allow_upscale is True, we also amplify small signals (e.g., sin).
+    """
+    finite = y_vals[np.isfinite(y_vals)]
+    if finite.size == 0:
+        return 1.0
+
+    mag = np.abs(finite)
+    q98 = float(np.quantile(mag, 0.98))
+    if q98 <= 0:
+        return 1.0
+
+    g = target_domain / q98  # how much to scale to hit the target
+    if not allow_upscale:
+        g = min(1.0, g)  # only shrink
+    else:
+        if max_upscale is not None:
+            g = min(max_upscale, g)  # cap amplification
+    # never negative or NaN
+    return float(max(0.0, g))
+
+# ---------------- helpers: snap + affine detection ----------------
+from sympy import Poly, diff, N  # ensure imported
+
+def round_half_away_from_zero(v: float) -> int:
+    """Round halves away from zero: 0.5->1, -0.5->-1, etc."""
+    return int(math.copysign(math.floor(abs(v) + 0.5), v))
+
+def to_step_from_domain(v_domain: float) -> int:
+    """
+    Convert a domain value to the nearest 100-step tick (±2900 clamp).
+    Domain 1.0 -> 100 steps. Uses half-away-from-zero.
+    """
+    s = round_half_away_from_zero(v_domain) * STEP_SIZE
+    return max(STEP_MIN, min(STEP_MAX, s))
+
+def _affine_params(expr):
+    """
+    If expr is affine: expr == a*x + b (degree <= 1), return (a, b) as floats.
+    Otherwise return None.
+    """
+    try:
+        p = Poly(expr, x)
+        if p.total_degree() <= 1:
+            a = float(N(p.coeffs()[0])) if p.total_degree() == 1 else 0.0
+            # safer extraction for constant term
+            b = float(N(p.eval(0)))
+            # If degree==1 but Poly put constant first, derive a,b explicitly:
+            # a = float(N(p.diff().eval(0)))  # derivative at any x is slope
+            # b = float(N(expr.subs(x, 0)))   # intercept
+            # But the above two lines are more robust across sympy versions:
+            a = float(N(diff(expr, x)))
+            b = float(N(expr.subs(x, 0)))
+            return a, b
+        return None
     except Exception:
-        pass
-    # Local fallback
-    return _fallback_suggestions(expr_text, xmin, xmax)
+        # fallback: derivative check for const slope
+        try:
+            s = diff(expr, x)
+            if not getattr(s, "free_symbols", set()):
+                a = float(N(s))
+                b = float(N(expr.subs(x, 0)))
+                return a, b
+        except Exception:
+            pass
+        return None
+def _quantize_domain_sequence(y_domain: np.ndarray,
+                              clamp_domain: float = DOMAIN_FULL_SCALE,
+                              step_size: int = STEP_SIZE) -> List[int]:
+    """
+    Quantize a sequence of domain values to integer ticks (1 tick = 1 domain unit),
+    with error diffusion to avoid plateaus. Returns step-space ints (multiples of 100).
+    """
+    out_steps: List[int] = []
+    err = 0.0
+    lo, hi = -clamp_domain, clamp_domain
 
-# -----------------------------------------------------------------------------
-# Combo routes
-# -----------------------------------------------------------------------------
-@app.post("/recommend-then-send")
-def recommend_then_send():
-    body = request.get_json(force=True, silent=True) or {}
-    expr_text = str(body.get("expr", "sin(x)")).strip()
-    xmin = float(body.get("xmin", DATA_XMIN_DEFAULT))
-    xmax = float(body.get("xmax", DATA_XMAX_DEFAULT))
-    ymin = float(body.get("ymin", DATA_YMAX_DEFAULT))
-    ymax = float(body.get("ymax",  DATA_YMAX_DEFAULT))
-    title = (body.get("title") or "").strip()
-    pick_idx = int(body.get("pick_idx", 0))  # which suggestion to send
+    for v in y_domain:
+        if not np.isfinite(v):
+            out_steps.append(None)  # caller can skip
+            continue
+        # diffuse accumulated error so we don't get long flats
+        vv = v + err
+        k = round(vv)  # integer domain tick
+        err = vv - k
+        # clamp in domain units, then to steps
+        k = int(max(lo, min(hi, k)))
+        out_steps.append(int(k * step_size))
+    return out_steps
+@app.route("/coords")
+def coords():
+    """
+    Build a *single-stroke* polyline in step space for Arduino:
+      • x ticks fixed by the chosen step: 0, step, 2*step, …, 2900, then -step, …, -2900
+      • Nonlinear: autoscale Y and snap to 'step'-grid
+      • Linear y=a*x+b: exact straight line in step space
+          - y=x: force y_step == x_step exactly
+          - general a,b: y_domain = a*(x_step/step) + b, then snap to 'step'-grid
+
+    Query params:
+      expr   : sympy expression (required)
+      step   : integer step size in motor steps (optional; default 100)
+               The effective step will be a divisor of 2900 (we coerce via gcd).
+      xmin,xmax,ymin,ymax,dx : accepted for metadata only
+      print=1 : print preview on server
+      send=1  : send to Arduino (if serial available)
+    """
+    expr_text = request.args.get("expr", "sin(x)")
+    do_print  = request.args.get("print", "0") == "1"
+    do_send   = request.args.get("send",  "0") == "1"
+
+    # --- parse metadata args (not used to change fixed x ticks) ---
+    try:
+        xmin = float(request.args.get("xmin", "-29"))
+        xmax = float(request.args.get("xmax", "29"))
+        ymin = float(request.args.get("ymin", "-29"))
+        ymax = float(request.args.get("ymax", "29"))
+        dx   = float(request.args.get("dx",   "1"))
+    except Exception:
+        return jsonify({"error": "bad numeric parameters"}), 400
+
+    # --- choose effective step size (divisor of STEP_MAX=2900) ---
+    try:
+        requested_step = int(request.args.get("step", str(STEP_SIZE)))
+    except Exception:
+        requested_step = STEP_SIZE
+
+    # guardrails: reasonable min/max
+    requested_step = max(1, min(500, requested_step))
+    # make it divide STEP_MAX exactly by taking gcd
+    eff_step = math.gcd(STEP_MAX, requested_step)
+    # keep it practical (avoid 1 unless explicitly asked)
+    if requested_step >= 2 and eff_step == 1:
+        eff_step = requested_step  # if they *really* want non-divisor, allow, but ticks won't hit 2900 exactly
+
+    # helpers bound to the effective step
+    def build_centered_step_xs(step_sz: int) -> list[int]:
+        pos = [i * step_sz for i in range(0, STEP_MAX // step_sz + 1)]     # 0..+2900
+        neg = [-i * step_sz for i in range(1, STEP_MAX // step_sz + 1)]     # -step..-2900
+        return pos + neg
+
+    def round_half_away_from_zero(v: float) -> int:
+        return int(math.copysign(math.floor(abs(v) + 0.5), v))
+
+    def to_step_from_domain_eff(v_domain: float, step_sz: int) -> int:
+        s = round_half_away_from_zero(v_domain) * step_sz
+        return max(STEP_MIN, min(STEP_MAX, s))
+
+    # effective domain full-scale and target for autoscale gain
+    domain_full_scale_eff = STEP_MAX / eff_step               # e.g., step=50 -> 58.0
+    y_target_domain_eff   = domain_full_scale_eff * 0.9       # keep same headroom as before
 
     try:
-        # Step 1: recommend
-        suggestions = _generate_recommendations(expr_text, xmin, xmax, title)
+        # compile expression
+        expr = parse_expression(expr_text)
+        f = lambdify(x, expr, modules=["numpy"])
 
-        # Step 2: choose one and send to Arduino
-        if not suggestions:
-            return jsonify({
-                "flow": "recommend_then_send",
-                "base_expr": expr_text,
-                "suggestions": [],
-                "sent": None,
-                "send_status": "no suggestions to send"
-            }), 200
+        # fixed x ticks for the chosen step
+        x_steps  = build_centered_step_xs(eff_step)                  # [0..+2900] + [-step..-2900]
+        x_domain = np.array(x_steps, dtype=float) / float(eff_step)  # domain x = steps/eff_step
 
-        sel = suggestions[max(0, min(pick_idx, len(suggestions)-1))]
-        sel_expr = sel["expr"]
-        sel_xmin = float(sel["xmin"])
-        sel_xmax = float(sel["xmax"])
+        cells: list[tuple[int, int]] = [(0, 0)]  # origin once
 
-        cells = _compute_cells_centered(sel_expr, sel_xmin, sel_xmax, ymin, ymax, N=GRID_N)
-        send_status = _send_cells_to_arduino(cells)
+        # linear detection (your existing helper)
+        aff = _affine_params(expr)
+        if aff is not None:
+            a, b = aff
+            gain = 1.0  # record for meta
 
-        return jsonify({
-            "flow": "recommend_then_send",
-            "base_expr": expr_text,
-            "suggestions": suggestions,
-            "sent": {
-                "expr": sel_expr, "xmin": sel_xmin, "xmax": sel_xmax,
-                "ymin": ymin, "ymax": ymax, "gridN": GRID_N,
-                "cell_count": len(cells), "status": send_status
+            if abs(a - 1.0) < 1e-12 and abs(b) < 1e-12:
+                # exact diagonal regardless of step size
+                last = cells[-1]
+                for xv in x_steps:
+                    yv = xv
+                    cur = (xv, yv)
+                    if cur != last:
+                        cells.append(cur)
+                        last = cur
+            else:
+                # general linear: y = a*x + b
+                last = cells[-1]
+                # y(0)=b
+                y0s = to_step_from_domain_eff(b, eff_step)
+                if last != (0, y0s):
+                    cells.append((0, y0s))
+                    last = (0, y0s)
+
+                for xv in x_steps[1:]:
+                    x_dom = xv / float(eff_step)
+                    y_dom = a * x_dom + b
+                    yv = to_step_from_domain_eff(y_dom, eff_step)
+                    cur = (xv, yv)
+                    if cur != last:
+                        cells.append(cur)
+                        last = cur
+        else:
+            # nonlinear: evaluate + autoscale using the effective domain scale
+            y_raw_complex = np.array(f(x_domain), dtype=np.complex128)
+            y_real = np.where(
+                np.isfinite(y_raw_complex.real) & (np.abs(y_raw_complex.imag) < 1e-12),
+                y_raw_complex.real,
+                np.nan
+            )
+            gain = _autoscale_gain(
+                y_real,
+                target_domain=y_target_domain_eff,
+                allow_upscale=True,
+                max_upscale=domain_full_scale_eff  # e.g., ~58 when step=50
+            )
+
+            last = cells[-1]
+            # first at x=0
+            if np.isfinite(y_real[0]):
+                y0s = to_step_from_domain_eff(float(gain * y_real[0]), eff_step)
+                if last != (0, y0s):
+                    cells.append((0, y0s))
+                    last = (0, y0s)
+
+            # remaining ticks
+            for xv, yv_dom in zip(x_steps[1:], y_real[1:]):
+                if not np.isfinite(yv_dom):
+                    continue
+                yv = to_step_from_domain_eff(float(gain * yv_dom), eff_step)
+                cur = (xv, yv)
+                if cur != last:
+                    cells.append(cur)
+                    last = cur
+
+        payload = {
+            "cells": cells,
+            "meta": {
+                "expr": expr_text,
+                "step_size_requested": requested_step,
+                "step_size_effective": eff_step,
+                "clamp": [STEP_MIN, STEP_MAX],
+                "order": f"0 -> +{STEP_MAX} step {eff_step}, then -{eff_step} -> -{STEP_MAX}",
+                "auto_gain": gain,
+                "domain_full_scale_effective": domain_full_scale_eff,
+                "y_target_domain_effective": y_target_domain_eff,
+                "compat_params": {"xmin": xmin, "xmax": xmax, "ymin": ymin, "ymax": ymax, "dx": dx},
             }
-        }), 200
+        }
+
+        if do_print:
+            prev = cells if len(cells) <= 200 else (cells[:200] + [("...", "...")])
+            print("\n=== SINGLE-STROKE CELLS ===")
+            print(f"count={len(cells)}; step_eff={eff_step}; clamp=±{STEP_MAX}; gain={payload['meta']['auto_gain']:.6g}")
+            print(prev)
+            print("=== END ===\n")
+
+        if do_send:
+            payload["send_status"] = _send_cells_to_arduino(cells)
+
+        return jsonify(payload)
 
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
 
-@app.post("/send-then-recommend")
-def send_then_recommend():
-    body = request.get_json(force=True, silent=True) or {}
-    expr_text = str(body.get("expr", "sin(x)")).strip()
-    xmin = float(body.get("xmin", DATA_XMIN_DEFAULT))
-    xmax = float(body.get("xmax", DATA_XMAX_DEFAULT))
-    ymin = float(body.get("ymin", DATA_YMIN_DEFAULT))
-    ymax = float(body.get("ymax",  DATA_XMAX_DEFAULT))
-    title = (body.get("title") or "").strip()
-
-    try:
-        # Step 1: compute cells and send for the CURRENT expr
-        cells = _compute_cells_centered(expr_text, xmin, xmax, ymin, ymax, N=GRID_N)
-        send_status = _send_cells_to_arduino(cells)
-
-        # Step 2: produce recommendations for "what to try next"
-        suggestions = _generate_recommendations(expr_text, xmin, xmax, title)
-
-        return jsonify({
-            "flow": "send_then_recommend",
-            "sent": {
-                "expr": expr_text, "xmin": xmin, "xmax": xmax,
-                "ymin": ymin, "ymax": ymax, "gridN": GRID_N,
-                "cell_count": len(cells), "status": send_status
-            },
-            "suggestions": suggestions
-        }), 200
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 400
-def _send_text_to_arduino(line: str) -> str:
-    """Send a single text line to Arduino, newline-terminated."""
-    port = os.getenv("ARDUINO_PORT", "/dev/tty.usbserial-130")
-    baud = int(os.getenv("ARDUINO_BAUD", "9600"))
-    if not port:
-        return "ARDUINO_PORT not set"
-    if serial is None:
-        return "pyserial not available"
-    try:
-        import time
-        with serial.Serial(port, baudrate=baud, timeout=10) as ser:
-            time.sleep(2)                 # allow Arduino auto-reset
-            ser.reset_input_buffer()      # clear boot noise
-            if not line.endswith("\n"):
-                line = line + "\n"
-            print("\n=== TX → Arduino (/send-expr) ===")
-            print(line, end="")
-            print("=== END TX ===\n")
-            ser.write(line.encode("utf-8"))
-            # optional readback
-            t0 = time.time()
-            while time.time() - t0 < 2:
-                rx = ser.readline().decode(errors="ignore").strip()
-                if rx:
-                    print("Arduino:", rx)
-        return f"sent 1 line to {port}@{baud}"
-    except Exception as e:
-        return f"send failed: {e}"
-@app.post("/send-expr")
-def send_expr():
-    """
-    Send raw expression text to Arduino as 'y=<expr>\\n'.
-
-    Body (JSON) or query:
-      expr   : required string, SymPy-parsable in x (e.g., "x", "sin(x)+1")
-      pretty : "1"/"0" pretty print JSON (optional)
-      print  : "1"/"0" also print to server console (optional; default on)
-    """
-    body = request.get_json(silent=True) or {}
-    expr_text = (body.get("expr") or request.args.get("expr") or "").strip()
-    pretty = (body.get("pretty") or request.args.get("pretty") or "0") == "1"
-    do_print = (body.get("print")  or request.args.get("print")  or "1") == "1"
-
-    if not expr_text:
-        return jsonify({"error": "expr required"}), 400
-    try:
-        # validate (safety + ensure it only uses x)
-        _ = parse_expression(expr_text)
-    except Exception as e:
-        return jsonify({"error": f"Invalid expression: {e}"}), 400
-
-    line = f"y={expr_text}"
-    if do_print:
-        print(f"\n=== RAW EXPR LINE ===\n{line}\n=== END RAW EXPR LINE ===\n")
-
-    status = _send_text_to_arduino(line)
-    ok = not status.lower().startswith(("send failed", "pyserial not", "arduino_port not"))
-    payload = {"expr": expr_text, "line": line, "send_status": status}
-    return Response(json.dumps(payload, indent=2) if pretty else json.dumps(payload),
-                    mimetype="application/json",
-                    status=(200 if ok else 500))
-
-
-# -----------------------------------------------------------------------------
 # Entrypoint
 # -----------------------------------------------------------------------------
 if __name__ == "__main__":
     # In production, consider: app.run(host="0.0.0.0", port=8000)
-    app.run(debug=False)
+    app.run(debug=True)

@@ -13,7 +13,7 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&display=swap" rel="stylesheet">
-   <style>
+    <style>
   :root{
     --bg:#f7f9ff;--bg2:#fff;--card:#fff;--card-border:#e9eef7;
     --text:#0f172a;--muted:#667085;--ring:#5184ff;
@@ -72,66 +72,89 @@
   .small-muted{color:var(--muted)!important}
   .xrange-row { display: none; }
 
-  /* --- Recommendations redesign --- */
-  .reco-card{border:1px solid var(--card-border)}
+  /* ===== Fancy Recommendations ===== */
+  .reco-card{
+    position:relative; border-radius:22px; overflow:hidden;
+    background:linear-gradient(180deg,rgba(255,255,255,.96),rgba(255,255,255,.96));
+    border:1px solid var(--card-border);
+    box-shadow:0 18px 40px rgba(17,24,39,.08);
+    backdrop-filter:saturate(140%) blur(6px);
+  }
+  .reco-card::before{ /* gradient edge */
+    content:""; position:absolute; inset:0; padding:1px; border-radius:22px;
+    background:var(--accent);
+    -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite:xor; mask-composite:exclude; pointer-events:none;
+  }
+
   .reco-head{
-    display:flex;align-items:center;justify-content:space-between;
-    padding:1.1rem 1.25rem;border-bottom:1px solid var(--divider);
+    display:flex; align-items:center; justify-content:space-between; gap:.75rem;
+    padding:1.15rem 1.25rem; border-bottom:1px solid var(--divider);
     background:linear-gradient(180deg,rgba(255,255,255,.98),rgba(255,255,255,.9));
   }
-  .reco-title{margin:0;font-weight:800;font-size:1.1rem;letter-spacing:.2px}
-  .reco-actions{display:flex;gap:.5rem}
-  .reco-body{padding:1rem 1.1rem 1.25rem}
-  .reco-grid{
-    display:grid;grid-template-columns:repeat(1,minmax(0,1fr));gap:.8rem;
+  .reco-title{
+    display:flex; align-items:center; gap:.6rem; margin:0;
+    font-weight:900; letter-spacing:.2px; font-size:1.1rem;
   }
-  @media (min-width: 576px){ .reco-grid{grid-template-columns:repeat(2,minmax(0,1fr));} }
-  @media (min-width: 992px){ .reco-grid{grid-template-columns:repeat(3,minmax(0,1fr));} }
+  .reco-badge{
+    font-weight:800; font-size:.72rem; letter-spacing:.08em; text-transform:uppercase;
+    padding:.25rem .5rem; border-radius:999px; color:#3b4a6b;
+    background:#f6f9ff; border:1px solid var(--card-border);
+  }
+  .reco-actions .btn-mini{
+    border:1px solid var(--card-border); background:#fff; font-weight:700;
+    border-radius:12px; padding:.45rem .7rem;
+  }
+  .reco-actions .btn-mini:hover{ border-color:#dfe7fb; box-shadow:0 8px 20px rgba(17,24,39,.08) }
 
-  .sug-tile{
-    border:1px solid var(--card-border);border-radius:16px;padding:.9rem .95rem;
-    background:radial-gradient(600px 300px at -10% -10%,rgba(94,160,255,.12),transparent 60%),#fff;
-    transition:transform .12s ease, box-shadow .12s ease, border-color .12s ease;
-    cursor:pointer
-  }
-  .sug-tile:hover{transform:translateY(-2px);box-shadow:0 12px 24px rgba(17,24,39,.08);border-color:#e0e7ff}
-  .sug-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:.4rem}
-  .sug-label{font-weight:700;font-size:.95rem}
-  .sug-badge{
-    font-size:.72rem;border-radius:999px;padding:.15rem .5rem;border:1px solid var(--chip-hover);background:#fff;color:#475569
-  }
-  .sug-expr{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;
-    font-weight:700;letter-spacing:.2px}
-  .sug-why{color:var(--muted);font-size:.85rem;margin-top:.35rem}
+  .reco-body{ padding:1rem 1.1rem 1.25rem }
+  .reco-grid{ display:grid; grid-template-columns:repeat(1,minmax(0,1fr)); gap:.9rem }
+  @media (min-width:576px){ .reco-grid{ grid-template-columns:repeat(2,minmax(0,1fr)) } }
+  @media (min-width:992px){ .reco-grid{ grid-template-columns:repeat(3,minmax(0,1fr)) } }
 
-  .reco-footer{
-    margin-top:1rem;border-top:1px dashed var(--divider);padding-top:.8rem;
-    display:flex;align-items:center;justify-content:space-between;gap:.75rem;flex-wrap:wrap
+  /* Tile */
+  .reco-tile{
+    position:relative; border-radius:16px; overflow:hidden; cursor:pointer;
+    border:1px solid var(--card-border); background:#fff;
+    transition:transform .18s ease, box-shadow .18s ease, border-color .18s ease;
   }
-  .reco-hint{color:var(--muted);font-size:.85rem}
-  .pill{
-    border:1px solid var(--chip-hover);background:#fff;border-radius:999px;padding:.35rem .7rem;font-weight:600;font-size:.85rem
+  .reco-tile:hover{ transform:translateY(-2px); border-color:#e0e7ff; box-shadow:0 14px 28px rgba(17,24,39,.10) }
+  .reco-tile::before{ /* subtle gradient corner */
+    content:""; position:absolute; inset:-25% -10% auto auto; height:90px;
+    background:radial-gradient(120px 90px at 100% 0%, rgba(94,160,255,.18), transparent 60%),
+               radial-gradient(120px 90px at 90% 10%, rgba(255,134,180,.16), transparent 60%);
+    pointer-events:none;
   }
-     .reco-chip{
-  border:1px solid var(--chip-hover);
-  background:#fff;
-  color:var(--text);
-  border-radius:999px;
-  padding:.35rem .7rem;
-  font-weight:600;
-  font-size:.85rem;
-  line-height:1;
-  cursor:pointer;
-  transition:background .12s ease, box-shadow .12s ease, border-color .12s ease, transform .12s ease;
-}
-.reco-chip:hover{
-  background:var(--chip-hover);
-  border-color:var(--ring);
-  box-shadow:0 6px 16px rgba(81,132,255,.12);
-  transform:translateY(-1px);
-}
+  .reco-top{ display:flex; align-items:center; justify-content:space-between; padding:.9rem .95rem .35rem }
+  .reco-label{ font-weight:800; font-size:.95rem; letter-spacing:.2px }
+  .reco-chip{
+    font-size:.72rem; border-radius:999px; padding:.15rem .5rem;
+    border:1px solid var(--chip-hover); background:#fff; color:#475569
+  }
+  .reco-expr{
+    padding:0 .95rem .85rem; color:#0f172a; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    font-weight:800; letter-spacing:.2px;
+  }
+  .reco-foot{
+    display:flex; align-items:center; justify-content:space-between; gap:.6rem;
+    padding:.65rem .85rem; border-top:1px dashed var(--divider); background:#fff;
+  }
+  .reco-why{ color:var(--muted); font-size:.84rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+  .btn-try{
+    border:0; border-radius:12px; font-weight:800; padding:.5rem .75rem; line-height:1;
+    background:var(--accent); color:#fff; box-shadow:0 10px 24px rgba(81,132,255,.22);
+  }
+  .btn-try:hover{ filter:brightness(1.05) }
 
-</style>
+  /* Loading shimmer */
+  .reco-skeleton{
+    border-radius:16px; height:92px; background:
+     linear-gradient(90deg,#f3f6ff 25%,#eef3ff 37%,#f3f6ff 63%);
+    background-size:400% 100%; animation:shimmer 1.1s linear infinite;
+    border:1px solid var(--card-border)
+  }
+  @keyframes shimmer{ 0%{background-position:100% 0} 100%{background-position:-100% 0} }
+    </style>
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   </head>
@@ -194,8 +217,6 @@
                   </div>
                 </div>
 
-
-
                 <div>
                   <label class="form-label fw-semibold">Title (optional)</label>
                   <div class="input-group">
@@ -228,13 +249,12 @@
                   <button class="btn btn-sm btn-chip preset" data-expr="log(x)" data-xmin="0.1" data-xmax="10">log(x)</button>
                   <button class="btn btn-sm btn-chip preset" data-expr="sin(x)/x" data-xmin="-20" data-xmax="20">sin(x)/x</button>
                 </div>
-                  <div class="d-flex flex-wrap gap-2 mt-2">
-    <button class="btn btn-sm btn-chip preset" data-expr="cos(x)" data-xmin="-10" data-xmax="10">cos(x)</button>
-    <button class="btn btn-sm btn-chip preset" data-expr="tan(x)" data-xmin="-5" data-xmax="5">tan(x)</button>
-                      <button class="btn btn-sm btn-chip preset" data-expr="sqrt(x)" data-xmin="0" data-xmax="25">sqrt(x)</button>
-  <button class="btn btn-sm btn-chip preset" data-expr="abs(x)" data-xmin="-10" data-xmax="10">abs(x)</button>
-
-  </div>
+                <div class="d-flex flex-wrap gap-2 mt-2">
+                  <button class="btn btn-sm btn-chip preset" data-expr="cos(x)" data-xmin="-10" data-xmax="10">cos(x)</button>
+                  <button class="btn btn-sm btn-chip preset" data-expr="tan(x)" data-xmin="-5" data-xmax="5">tan(x)</button>
+                  <button class="btn btn-sm btn-chip preset" data-expr="sqrt(x)" data-xmin="0" data-xmax="25">sqrt(x)</button>
+                  <button class="btn btn-sm btn-chip preset" data-expr="abs(x)" data-xmin="-10" data-xmax="10">abs(x)</button>
+                </div>
               </div>
 
               <div id="srStatus" class="small mt-3 small-muted"></div>
@@ -247,41 +267,59 @@
           <div class="row g-4">
             <!-- Graph (TOP) -->
             <div class="col-12">
-<div class="card rounded-4 shadow-soft overflow-hidden h-100">
-  <div class="card-header graph-head d-flex align-items-center justify-content-between">
-    <div>
-      <h3 class="graph-title">Graph</h3>
-      <div class="graph-sub">High-contrast, larger canvas for easier inspection</div>
-    </div>
-  </div>
-  <div class="graph-panel">
-    <div id="graphEmpty" class="graph-empty">
-      <div>
-        <div class="mb-1 fw-semibold">Your graph will appear here</div>
-        <div class="small small-muted">Enter an expression (e.g., <code>sin(x)</code>) and click <strong>Plot</strong>.</div>
-      </div>
-    </div>
-    <canvas id="chart"></canvas>
-  </div>
-  <div class="card-footer bg-white border-0 small px-4 pb-4 small-muted">
-    Tip: Use <code>^</code> for exponent (e.g., <code>x^3</code>). <strong>Click “Plot” to render.</strong>
-    <span id="err" class="text-danger ms-2"></span>
-  </div>
-</div>
-
+              <div class="card rounded-4 shadow-soft overflow-hidden h-100">
+                <div class="card-header graph-head d-flex align-items-center justify-content-between">
+                  <div>
+                    <h3 class="graph-title">Graph</h3>
+                    <div class="graph-sub">High-contrast, larger canvas for easier inspection</div>
+                  </div>
+                </div>
+                <div class="graph-panel">
+                  <div id="graphEmpty" class="graph-empty">
+                    <div>
+                      <div class="mb-1 fw-semibold">Your graph will appear here</div>
+                      <div class="small small-muted">Enter an expression (e.g., <code>sin(x)</code>) and click <strong>Plot</strong>.</div>
+                    </div>
+                  </div>
+                  <canvas id="chart"></canvas>
+                </div>
+                <div class="card-footer bg-white border-0 small px-4 pb-4 small-muted">
+                  Tip: Use <code>^</code> for exponent (e.g., <code>x^3</code>). <strong>Click “Plot” to render.</strong>
+                  <span id="err" class="text-danger ms-2"></span>
+                </div>
+              </div>
             </div>
 
             <!-- Recommendations (BOTTOM) -->
             <div class="col-12">
               <section class="h-100">
-                <div class="card rounded-4 shadow-soft h-100">
-                  <div class="card-header px-4 pt-4 d-flex align-items-center justify-content-between">
-                    <h6 class="mb-0 fw-bold">Try next</h6>
-                    <small id="recoStatus" class="small-muted"></small>
+                <div class="reco-card h-100">
+                  <div class="reco-head">
+                    <h6 class="reco-title mb-0">
+                      <span class="reco-badge">Try next</span>
+                      Explore variations
+                    </h6>
+                    <div class="reco-actions">
+                      <button id="shuffleReco" class="btn-mini" type="button">Shuffle</button>
+                      <button id="clearReco" class="btn-mini" type="button">Clear</button>
+                    </div>
                   </div>
-                  <div class="card-body pt-3 pb-4 px-4 d-flex flex-column">
-                    <div id="recoChips" class="d-flex flex-wrap gap-2"></div>
-                    <div id="recoWhy" class="small small-muted mt-3"></div>
+
+                  <div class="reco-body">
+                    <div id="recoStatus" class="small-muted mb-2"></div>
+
+                    <!-- Loading skeletons -->
+                    <div id="recoSkeleton" class="reco-grid d-none">
+                      <div class="reco-skeleton"></div>
+                      <div class="reco-skeleton"></div>
+                      <div class="reco-skeleton"></div>
+                    </div>
+
+                    <!-- Tiles injected here -->
+                    <div id="recoGrid" class="reco-grid"></div>
+
+                    <!-- Why lines -->
+                    <div id="recoWhy" class="small mt-3"></div>
                   </div>
                 </div>
               </section>
@@ -337,7 +375,7 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-<script>
+    <script>
   // ------------------ Config ------------------
   // Chart sampling (wide for smooth curves)
   const DATA_XMIN = -60;
@@ -466,7 +504,7 @@
         setTimeout(() => { if (pathStatus.textContent.includes('Path prepared')) pathStatus.textContent = ''; }, 3000);
       }
 
-      // 4) Recommendations (optional)
+      // 4) Recommendations
       await fetchRecommendations();
 
     } catch (e) {
@@ -593,52 +631,102 @@
     form?.addEventListener('submit', () => stopRecognition());
   })();
 
-  // ------------------ Recommendations ------------------
-  const recoChips  = document.getElementById('recoChips');
-  const recoWhy    = document.getElementById('recoWhy');
-  const recoStatus = document.getElementById('recoStatus');
+  // ------------------ Recommendations (fancy) ------------------
+  const recoGrid     = document.getElementById('recoGrid');
+  const recoWhy      = document.getElementById('recoWhy');
+  const recoStatus   = document.getElementById('recoStatus');
+  const recoSkeleton = document.getElementById('recoSkeleton');
+  const btnShuffle   = document.getElementById('shuffleReco');
+  const btnClear     = document.getElementById('clearReco');
 
-  function setRecoLoading(loading) {
-    if (!recoStatus) return;
+  function setRecoLoading(loading){
+    if (!recoStatus || !recoSkeleton) return;
     recoStatus.innerHTML = loading
       ? '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Finding ideas…'
       : '';
+    recoSkeleton.classList.toggle('d-none', !loading);
   }
-  function escapeHtml(s){ return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
-  function renderRecommendations(list) {
-    if (!recoChips || !recoWhy) return;
-    recoChips.innerHTML = ''; recoWhy.innerHTML = '';
 
-    if (!hasPlotted) {
-      recoChips.innerHTML = `<div class="text-muted small">Plot something to get smart suggestions. Try: <code>sin(x)</code>, <code>x**2</code>, or <code>x+1</code>.</div>`;
+  function escapeHtml(s){ return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+
+  function renderRecommendations(list){
+    if (!recoGrid || !recoWhy) return;
+    recoGrid.innerHTML = ''; recoWhy.innerHTML = '';
+
+    if (!hasPlotted){
+      recoGrid.innerHTML = `<div class="small text-muted">Plot something to get smart suggestions. Try: <code>sin(x)</code>, <code>x^2</code>, or <code>sin(x)/x</code>.</div>`;
       return;
     }
-    if (!list?.length) {
-      recoChips.innerHTML = `<div class="text-muted small">No suggestions yet. Quick tweaks: <code>x+1</code>, <code>2*x</code>, <code>x**2</code>, <code>sin(x)</code>.</div>`;
+    if (!list?.length){
+      recoGrid.innerHTML = `<div class="small text-muted">No suggestions yet. Quick tweaks: <code>x+1</code>, <code>2*x</code>, <code>x^2</code>, <code>sin(x)</code>.</div>`;
       return;
     }
-    list.forEach(s => {
-      const chip = document.createElement('button');
-      chip.type = 'button'; chip.className = 'reco-chip';
-      chip.title = s.why || ''; chip.textContent = s.label ? `${s.label} • ${s.expr}` : s.expr;
-      chip.addEventListener('click', () => { expr.value = s.expr || expr.value; if (!title.value && s.label) title.value = s.label; updateChart(); });
-      recoChips.appendChild(chip);
+
+    list.forEach((s, idx) => {
+      const label = s.label || 'Variation';
+      const why   = s.why   || '';
+      const exprS = s.expr  || expr.value;
+
+      const tile = document.createElement('div');
+      tile.className = 'reco-tile';
+      tile.innerHTML = `
+        <div class="reco-top">
+          <div class="reco-label">${escapeHtml(label)}</div>
+          <span class="reco-chip">${idx+1 < 10 ? '0'+(idx+1) : idx+1}</span>
+        </div>
+        <div class="reco-expr"><code>${escapeHtml(exprS)}</code></div>
+        <div class="reco-foot">
+          <div class="reco-why">${escapeHtml(why)}</div>
+          <button class="btn-try reco-try" type="button">Try it</button>
+        </div>
+      `;
+
+      tile.addEventListener('click', (e) => {
+        if (e.target && e.target.classList.contains('reco-try')) return;
+        expr.value = exprS; title.value = label; updateChart();
+      });
+      tile.querySelector('.reco-try')?.addEventListener('click', () => {
+        expr.value = exprS; title.value = label; updateChart();
+      });
+
+      recoGrid.appendChild(tile);
     });
-    recoWhy.innerHTML = list.map(s => `• <strong>${s.expr}</strong>: ${escapeHtml(s.why || '')}`).join('<br/>');
+
+    recoWhy.innerHTML = list.map(s => `• <strong>${escapeHtml(s.expr||'')}</strong>: ${escapeHtml(s.why||'')}`).join('<br/>');
   }
-  async function fetchRecommendations() {
-    try {
+
+  async function fetchRecommendations(){
+    try{
       setRecoLoading(true);
       const res = await fetch('/recommend', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({ expr: expr.value || 'sin(x)', xmin: DATA_XMIN, xmax: DATA_XMAX, title: title.value || '' })
       });
       const payload = await res.json();
       renderRecommendations(payload.suggestions || []);
-    } catch { renderRecommendations([]); } finally { setRecoLoading(false); }
+    } catch{
+      renderRecommendations([]);
+    } finally{
+      setRecoLoading(false);
+    }
   }
   renderRecommendations([]);
-</script>
+
+  // Controls
+  btnShuffle?.addEventListener('click', async () => {
+    setRecoLoading(true);
+    try{
+      await fetchRecommendations(); // request fresh set server-side (or shuffle client-side)
+    } finally{
+      setRecoLoading(false);
+    }
+  });
+  btnClear?.addEventListener('click', () => {
+    recoGrid.innerHTML = '';
+    recoWhy.textContent = '';
+    recoStatus.textContent = '';
+  });
+    </script>
 
   </body>
 </html>
